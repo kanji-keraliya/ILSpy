@@ -93,6 +93,7 @@ namespace ICSharpCode.Decompiler
 				tupleConversions = false;
 				discards = false;
 				localFunctions = false;
+				deconstruction = false;
 			}
 			if (languageVersion < CSharp.LanguageVersion.CSharp7_2) {
 				introduceReadonlyAndInModifiers = false;
@@ -111,13 +112,22 @@ namespace ICSharpCode.Decompiler
 				readOnlyMethods = false;
 				asyncUsingAndForEachStatement = false;
 				asyncEnumerator = false;
+				useEnhancedUsing = false;
 				staticLocalFunctions = false;
+				ranges = false;
+				switchExpressions = false;
+			}
+			if (languageVersion < CSharp.LanguageVersion.Preview) {
+				nativeIntegers = false;
+				initAccessors = false;
 			}
 		}
 
 		public CSharp.LanguageVersion GetMinimumRequiredVersion()
 		{
-			if (nullableReferenceTypes || readOnlyMethods || asyncEnumerator || asyncUsingAndForEachStatement || staticLocalFunctions)
+			if (nativeIntegers || initAccessors)
+				return CSharp.LanguageVersion.Preview;
+			if (nullableReferenceTypes || readOnlyMethods || asyncEnumerator || asyncUsingAndForEachStatement || staticLocalFunctions || ranges || switchExpressions)
 				return CSharp.LanguageVersion.CSharp8_0;
 			if (introduceUnmanagedConstraint || tupleComparisons || stackAllocInitializers || patternBasedFixedStatement)
 				return CSharp.LanguageVersion.CSharp7_3;
@@ -138,6 +148,57 @@ namespace ICSharpCode.Decompiler
 			if (anonymousMethods || liftNullables || yieldReturn || useImplicitMethodGroupConversion)
 				return CSharp.LanguageVersion.CSharp2;
 			return CSharp.LanguageVersion.CSharp1;
+		}
+
+		bool nativeIntegers = true;
+
+		/// <summary>
+		/// Use C# 9 <c>nint</c>/<c>nuint</c> types.
+		/// </summary>
+		[Category("C# 9.0 (experimental)")]
+		[Description("DecompilerSettings.NativeIntegers")]
+		public bool NativeIntegers {
+			get { return nativeIntegers; }
+			set {
+				if (nativeIntegers != value) {
+					nativeIntegers = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool initAccessors = true;
+
+		/// <summary>
+		/// Use C# 9 <c>init;</c> property accessors.
+		/// </summary>
+		[Category("C# 9.0 (experimental)")]
+		[Description("DecompilerSettings.InitAccessors")]
+		public bool InitAccessors {
+			get { return initAccessors; }
+			set {
+				if (initAccessors != value) {
+					initAccessors = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool switchExpressions = true;
+
+		/// <summary>
+		/// Use C# 8 switch expressions.
+		/// </summary>
+		[Category("C# 8.0 / VS 2019")]
+		[Description("DecompilerSettings.SwitchExpressions")]
+		public bool SwitchExpressions {
+			get { return switchExpressions; }
+			set {
+				if (switchExpressions != value) {
+					switchExpressions = value;
+					OnPropertyChanged();
+				}
+			}
 		}
 
 		bool anonymousMethods = true;
@@ -414,6 +475,23 @@ namespace ICSharpCode.Decompiler
 			}
 		}
 
+		bool useEnhancedUsing = true;
+
+		/// <summary>
+		/// Use enhanced using statements.
+		/// </summary>
+		[Category("C# 8.0 / VS 2019")]
+		[Description("DecompilerSettings.UseEnhancedUsing")]
+		public bool UseEnhancedUsing {
+			get { return useEnhancedUsing; }
+			set {
+				if (useEnhancedUsing != value) {
+					useEnhancedUsing = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
 		bool alwaysUseBraces = true;
 
 		/// <summary>
@@ -555,6 +633,26 @@ namespace ICSharpCode.Decompiler
 			set {
 				if (alwaysCastTargetsOfExplicitInterfaceImplementationCalls != value) {
 					alwaysCastTargetsOfExplicitInterfaceImplementationCalls = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool alwaysQualifyMemberReferences = false;
+
+		/// <summary>
+		/// Gets/Sets whether to always qualify member references.
+		/// true: <c>this.DoSomething();</c>
+		/// false: <c>DoSomething();</c>
+		/// default: false
+		/// </summary>
+		[Category("Other")]
+		[Description("DecompilerSettings.AlwaysQualifyMemberReferences")]
+		public bool AlwaysQualifyMemberReferences {
+			get { return alwaysQualifyMemberReferences; }
+			set {
+				if (alwaysQualifyMemberReferences != value) {
+					alwaysQualifyMemberReferences = value;
 					OnPropertyChanged();
 				}
 			}
@@ -1083,6 +1181,23 @@ namespace ICSharpCode.Decompiler
 			}
 		}
 
+		bool deconstruction = true;
+
+		/// <summary>
+		/// Gets/Sets whether C# 7.0 deconstruction should be detected.
+		/// </summary>
+		[Category("C# 7.0 / VS 2017")]
+		[Description("DecompilerSettings.Deconstruction")]
+		public bool Deconstruction {
+			get { return deconstruction; }
+			set {
+				if (deconstruction != value) {
+					deconstruction = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
 		bool staticLocalFunctions = true;
 
 		/// <summary>
@@ -1095,6 +1210,23 @@ namespace ICSharpCode.Decompiler
 			set {
 				if (staticLocalFunctions != value) {
 					staticLocalFunctions = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool ranges = true;
+
+		/// <summary>
+		/// Gets/Sets whether C# 8.0 index and range syntax should be used.
+		/// </summary>
+		[Category("C# 8.0 / VS 2019")]
+		[Description("DecompilerSettings.Ranges")]
+		public bool Ranges {
+			get { return ranges; }
+			set {
+				if (ranges != value) {
+					ranges = value;
 					OnPropertyChanged();
 				}
 			}
@@ -1306,6 +1438,61 @@ namespace ICSharpCode.Decompiler
 			set {
 				if (separateLocalVariableDeclarations != value) {
 					separateLocalVariableDeclarations = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool useSdkStyleProjectFormat = true;
+
+		/// <summary>
+		/// Gets or sets a value indicating whether the new SDK style format
+		/// shall be used for the generated project files.
+		/// </summary>
+		[Category("DecompilerSettings.Other")]
+		[Description("DecompilerSettings.UseSdkStyleProjectFormat")]
+		public bool UseSdkStyleProjectFormat {
+			get { return useSdkStyleProjectFormat; }
+			set {
+				if (useSdkStyleProjectFormat != value) {
+					useSdkStyleProjectFormat = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool aggressiveScalarReplacementOfAggregates = false;
+
+		[Category("DecompilerSettings.Other")]
+		[Description("DecompilerSettings.AggressiveScalarReplacementOfAggregates")]
+		// TODO : Remove once https://github.com/icsharpcode/ILSpy/issues/2032 is fixed.
+#if !DEBUG
+		[Browsable(false)]
+#endif
+		public bool AggressiveScalarReplacementOfAggregates {
+			get { return aggressiveScalarReplacementOfAggregates; }
+			set {
+				if (aggressiveScalarReplacementOfAggregates != value) {
+					aggressiveScalarReplacementOfAggregates = value;
+					OnPropertyChanged();
+				}
+			}
+		}
+
+		bool aggressiveInlining = false;
+
+		/// <summary>
+		/// If set to false (the default), the decompiler will inline local variables only when they occur
+		/// in a context where the C# compiler is known to emit compiler-generated locals.
+		/// If set to true, the decompiler will inline local variables whenever possible.
+		/// </summary>
+		[Category("DecompilerSettings.Other")]
+		[Description("DecompilerSettings.AggressiveInlining")]
+		public bool AggressiveInlining {
+			get { return aggressiveInlining; }
+			set {
+				if (aggressiveInlining != value) {
+					aggressiveInlining = value;
 					OnPropertyChanged();
 				}
 			}

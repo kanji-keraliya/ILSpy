@@ -4,7 +4,7 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <OutputType>WinExe</OutputType>
-    <LangVersion>7.3</LangVersion>
+    <LangVersion>8.0</LangVersion>
     <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
     <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
@@ -56,6 +56,9 @@
     <PackageReference Include="Mono.Cecil" Version="0.10.3" />
     <PackageReference Include="OSVersionHelper" Version="1.0.11" />
     <PackageReference Include="DataGridExtensions" Version="2.1.1" />
+    <PackageReference Include="System.Reflection.Metadata" Version="1.8.1" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="4.7.0" />
+    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.19" />
   </ItemGroup>
 
   <ItemGroup>
@@ -74,16 +77,18 @@
   <ItemGroup>
     <Compile Include="..\ICSharpCode.Decompiler.PdbProvider.Cecil\MonoCecilDebugInfoProvider.cs" Link="DebugInfo\MonoCecilDebugInfoProvider.cs" />
     <Compile Include="AboutPage.cs" />
+    <Compile Include="Analyzers\AnalyzerContext.cs" />
     <Compile Include="Analyzers\AnalyzerScope.cs" />
     <Compile Include="Analyzers\Builtin\AttributeAppliedToAnalyzer.cs" />
-    <Compile Include="Analyzers\Builtin\EventImplementsInterfaceAnalyzer.cs" />
+    <Compile Include="Analyzers\Builtin\EventImplementedByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\EventOverriddenByAnalyzer.cs" />
-    <Compile Include="Analyzers\Builtin\MethodImplementsInterfaceAnalyzer.cs" />
+    <Compile Include="Analyzers\Builtin\MethodImplementedByAnalyzer.cs" />
+    <Compile Include="Analyzers\Builtin\MemberImplementsInterfaceAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\MethodOverriddenByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\MethodVirtualUsedByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\MethodUsedByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\MethodUsesAnalyzer.cs" />
-    <Compile Include="Analyzers\Builtin\PropertyImplementsInterfaceAnalyzer.cs" />
+    <Compile Include="Analyzers\Builtin\PropertyImplementedByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\PropertyOverriddenByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\TypeExposedByAnalyzer.cs" />
     <Compile Include="Analyzers\Builtin\TypeInstantiatedByAnalyzer.cs" />
@@ -123,9 +128,7 @@
     <Compile Include="Commands\ShowDebugSteps.cs" />
     <Compile Include="Commands\SortAssemblyListCommand.cs" />
     <Compile Include="Controls\BoolToVisibilityConverter.cs" />
-    <Compile Include="Controls\CustomDialog.cs">
-      <SubType>Form</SubType>
-    </Compile>
+    <Compile Include="Controls\CustomDialog.cs" />
     <Compile Include="Controls\GridViewColumnAutoSize.cs" />
     <Compile Include="Controls\MarkupExtensions.cs" />
     <Compile Include="Controls\ResourceObjectTable.xaml.cs">
@@ -137,6 +140,7 @@
     <Compile Include="Controls\SearchBox.cs" />
     <Compile Include="Controls\SortableGridViewColumn.cs" />
     <Compile Include="Controls\XamlResourceExtension.cs" />
+    <Compile Include="EntityReference.cs" />
     <Compile Include="Metadata\CorTables\FieldRVATableTreeNode.cs">
       <SubType>Code</SubType>
       <Generator>MSBuild:Compile</Generator>
@@ -236,8 +240,6 @@
     <Compile Include="DecompilationOptions.cs" />
     <Compile Include="ExtensionMethods.cs" />
     <Compile Include="FilterSettings.cs" />
-    <Compile Include="Fusion.cs" />
-    <Compile Include="GacInterop.cs" />
     <Compile Include="GuessFileType.cs" />
     <Compile Include="ContextMenuEntry.cs" />
     <Compile Include="Languages\CSharpBracketSearcher.cs" />
@@ -453,15 +455,10 @@
     <Compile Include="Analyzers\Builtin\TypeExtensionMethodsAnalyzer.cs" />
     <Compile Include="Docking\DockWorkspace.cs" />
     <EmbeddedResource Include="..\doc\ILSpyAboutPage.txt" />
+    <EmbeddedResource Include="..\doc\ILSpyAboutPage_zh_Hans.txt" />
     <EmbeddedResource Include="..\doc\third-party-notices.txt" />
-    <EmbeddedResource Include="..\doc\LGPL.txt">
-      <Link>LGPL.txt</Link>
-    </EmbeddedResource>
     <EmbeddedResource Include="..\doc\license.txt">
       <Link>license.txt</Link>
-    </EmbeddedResource>
-    <EmbeddedResource Include="..\doc\MS-PL.txt">
-      <Link>MS-PL.txt</Link>
     </EmbeddedResource>
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>PublicResXFileCodeGenerator</Generator>
@@ -847,7 +844,22 @@
   </PropertyGroup>
 
   <Import Project="$(VCToolsVersionPropsFile)" Condition="Exists('$(VCToolsVersionPropsFile)')" />
-  
+
+  <ItemGroup>
+    <SortResXInput Include="Properties\*.resx" />
+    <SortResXInput Include="..\ILSpy.AddIn\*.resx" />
+    <SortResXInput Include="..\ILSpy.ReadyToRun\Properties\*.resx" />
+    <SortResXStamp Include="obj\sort-resx.stamp" />
+  </ItemGroup>
+
+  <Target Name="SortResX" BeforeTargets="BeforeBuild" Inputs="@(SortResXInput)" Outputs="@(SortResXStamp)">
+    <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
+      <SortResX>powershell -NoProfile -ExecutionPolicy Bypass -File BuildTools/sort-resx.ps1</SortResX>
+    </PropertyGroup>
+    <Exec WorkingDirectory=".." Command="$(SortResX)" Timeout="60000" />
+    <Touch Files="@(SortResXStamp)" AlwaysCreate="true" />
+  </Target>
+
   <Target Name="ApplyStackExtension" AfterTargets="PostBuildEvent">
     <Exec Condition="'$(VCToolsVersion)'!=''" Command="&quot;$(VCBasePath)Tools\MSVC\$(VCToolsVersion)\bin\Hostx64\x64\editbin.exe&quot; /stack:16777216 &quot;$(TargetPath)&quot;&#xD;&#xA;EXIT 0" />
     <Exec Command="&quot;$(TargetFrameworkSDKToolsDirectory)sn.exe&quot; -R &quot;$(TargetPath)&quot; &quot;$(SolutionDir)\ICSharpCode.Decompiler\ICSharpCode.Decompiler.snk&quot;" />

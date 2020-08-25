@@ -32,6 +32,7 @@ using ICSharpCode.AvalonEdit.Utils;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
+using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.Metadata;
@@ -106,6 +107,7 @@ namespace ICSharpCode.ILSpy
 						new LanguageVersion(Decompiler.CSharp.LanguageVersion.CSharp7_2.ToString(), "C# 7.2 / VS 2017.4"),
 						new LanguageVersion(Decompiler.CSharp.LanguageVersion.CSharp7_3.ToString(), "C# 7.3 / VS 2017.7"),
 						new LanguageVersion(Decompiler.CSharp.LanguageVersion.CSharp8_0.ToString(), "C# 8.0 / VS 2019"),
+						new LanguageVersion(Decompiler.CSharp.LanguageVersion.Preview.ToString(), "C# 9.0 (experimental)"),
 					};
 				}
 				return versions;
@@ -119,6 +121,9 @@ namespace ICSharpCode.ILSpy
 			decompiler.DebugInfoProvider = module.GetDebugInfoOrNull();
 			while (decompiler.AstTransforms.Count > transformCount)
 				decompiler.AstTransforms.RemoveAt(decompiler.AstTransforms.Count - 1);
+			if (options.EscapeInvalidIdentifiers) {
+				decompiler.AstTransforms.Add(new EscapeInvalidIdentifiers());
+			}
 			return decompiler;
 		}
 
@@ -362,7 +367,7 @@ namespace ICSharpCode.ILSpy
 				base.DecompileAssembly(assembly, output, options);
 
 				// don't automatically load additional assemblies when an assembly node is selected in the tree view
-				using (options.FullDecompilation ? null : LoadedAssembly.DisableAssemblyLoad()) {
+				using (options.FullDecompilation ? null : LoadedAssembly.DisableAssemblyLoad(assembly.AssemblyList)) {
 					IAssemblyResolver assemblyResolver = assembly.GetAssemblyResolver();
 					var typeSystem = new DecompilerTypeSystem(module, assemblyResolver, options.DecompilerSettings);
 					var globalType = typeSystem.MainModule.TypeDefinitions.FirstOrDefault();
@@ -413,6 +418,9 @@ namespace ICSharpCode.ILSpy
 
 					CSharpDecompiler decompiler = new CSharpDecompiler(typeSystem, options.DecompilerSettings);
 					decompiler.CancellationToken = options.CancellationToken;
+					if (options.EscapeInvalidIdentifiers) {
+						decompiler.AstTransforms.Add(new EscapeInvalidIdentifiers());
+					}
 					SyntaxTree st;
 					if (options.FullDecompilation) {
 						st = decompiler.DecompileWholeModuleAsSingleFile();
@@ -431,21 +439,19 @@ namespace ICSharpCode.ILSpy
 			readonly DecompilationOptions options;
 
 			public ILSpyWholeProjectDecompiler(LoadedAssembly assembly, DecompilationOptions options)
+				: base(options.DecompilerSettings, assembly.GetAssemblyResolver(), assembly.GetDebugInfoOrNull())
 			{
 				this.assembly = assembly;
 				this.options = options;
-				base.Settings = options.DecompilerSettings;
-				base.AssemblyResolver = assembly.GetAssemblyResolver();
-				base.DebugInfoProvider = assembly.GetDebugInfoOrNull();
 			}
 
-			protected override IEnumerable<Tuple<string, string>> WriteResourceToFile(string fileName, string resourceName, Stream entryStream)
+			protected override IEnumerable<(string itemType, string fileName)> WriteResourceToFile(string fileName, string resourceName, Stream entryStream)
 			{
 				foreach (var handler in App.ExportProvider.GetExportedValues<IResourceFileHandler>()) {
 					if (handler.CanHandle(fileName, options)) {
 						entryStream.Position = 0;
 						fileName = handler.WriteResourceToFile(assembly, fileName, entryStream, options);
-						return new[] { Tuple.Create(handler.EntryType, fileName) };
+						return new[] { (handler.EntryType, fileName) };
 					}
 				}
 				return base.WriteResourceToFile(fileName, resourceName, entryStream);
@@ -641,6 +647,9 @@ namespace ICSharpCode.ILSpy
 			var settings = new DecompilationOptions().DecompilerSettings;
 			if (!settings.LiftNullables) {
 				flags &= ~ConversionFlags.UseNullableSpecifierForValueTypes;
+			}
+			if (entity is IMethod m && m.IsLocalFunction) {
+				writer.WriteIdentifier(Identifier.Create("(local)"));
 			}
 			new CSharpAmbience() {
 				ConversionFlags = flags,

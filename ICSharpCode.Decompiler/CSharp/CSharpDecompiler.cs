@@ -120,18 +120,12 @@ namespace ICSharpCode.Decompiler.CSharp
 				new DetectExitPoints(canIntroduceExitForReturn: true),
 				new BlockILTransform { // per-block transforms
 					PostOrderTransforms = {
-						//new UseExitPoints(),
 						new ConditionDetection(),
 						new LockTransform(),
 						new UsingTransform(),
 						// CachedDelegateInitialization must run after ConditionDetection and before/in LoopingBlockTransform
 						// and must run before NullCoalescingTransform
 						new CachedDelegateInitialization(),
-						// Run the assignment transform both before and after copy propagation.
-						// Before is necessary because inline assignments of constants are otherwise
-						// copy-propated (turned into two separate assignments of the constant).
-						// After is necessary because the assigned value might involve null coalescing/etc.
-						new StatementTransform(new ILInlining(), new TransformAssignment()),
 						new StatementTransform(
 							// per-block transforms that depend on each other, and thus need to
 							// run interleaved (statement by statement).
@@ -149,6 +143,8 @@ namespace ICSharpCode.Decompiler.CSharp
 							new TransformArrayInitializers(),
 							new TransformCollectionAndObjectInitializers(),
 							new TransformExpressionTrees(),
+							new IndexRangeTransform(),
+							new DeconstructionTransform(),
 							new NamedArgumentTransform(),
 							new UserDefinedLogicTransform()
 						),
@@ -156,6 +152,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				},
 				new ProxyCallReplacer(),
 				new FixRemainingIncrements(),
+				new FixLoneIsInst(),
 				new CopyPropagation(),
 				new DelegateConstruction(),
 				new LocalFunctionDecompiler(),
@@ -163,6 +160,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				new HighLevelLoopTransform(),
 				new ReduceNestingTransform(),
 				new IntroduceDynamicTypeOnLocals(),
+				new IntroduceNativeIntTypeOnLocals(),
 				new AssignVariableNames(),
 			};
 		}
@@ -180,7 +178,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				new IntroduceUnsafeModifier(),
 				new AddCheckedBlocks(),
 				new DeclareVariables(), // should run after most transforms that modify statements
-				new ConvertConstructorCallIntoInitializer(), // must run after DeclareVariables
+				new TransformFieldAndConstructorInitializers(), // must run after DeclareVariables
 				new DecimalConstantTransform(),
 				new PrettifyAssignments(), // must run after DeclareVariables
 				new IntroduceUsingDeclarations(),
@@ -365,7 +363,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		static bool IsAnonymousMethodCacheField(SRM.FieldDefinition field, MetadataReader metadata)
 		{
 			var name = metadata.GetString(field.Name);
-			return name.StartsWith("CS$<>", StringComparison.Ordinal) || name.StartsWith("<>f__am", StringComparison.Ordinal);
+			return name.StartsWith("CS$<>", StringComparison.Ordinal) || name.StartsWith("<>f__am", StringComparison.Ordinal) || name.StartsWith("<>f__mg", StringComparison.Ordinal);
 		}
 
 		static bool IsClosureType(SRM.TypeDefinition type, MetadataReader metadata)
@@ -375,7 +373,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (name.Contains("DisplayClass") || name.Contains("AnonStorey"))
 				return true;
-			return type.BaseType.GetFullTypeName(metadata).ToString() == "System.Object" && !type.GetInterfaceImplementations().Any();
+			return type.BaseType.IsKnownType(metadata, KnownTypeCode.Object) && !type.GetInterfaceImplementations().Any();
 		}
 		#endregion
 
@@ -395,7 +393,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			settings.LoadInMemory = true;
 			var file = LoadPEFile(fileName, settings);
 			var resolver = new UniversalAssemblyResolver(fileName, settings.ThrowOnAssemblyResolveErrors,
-				file.Reader.DetectTargetFrameworkId(),
+				file.DetectTargetFrameworkId(),
 				settings.LoadInMemory ? PEStreamOptions.PrefetchMetadata : PEStreamOptions.Default,
 				settings.ApplyWindowsRuntimeProjections ? MetadataReaderOptions.ApplyWindowsRuntimeProjections : MetadataReaderOptions.None);
 			return new DecompilerTypeSystem(file, resolver);
@@ -408,6 +406,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			typeSystemAstBuilder.AlwaysUseShortTypeNames = true;
 			typeSystemAstBuilder.AddResolveResultAnnotations = true;
 			typeSystemAstBuilder.UseNullableSpecifierForValueTypes = settings.LiftNullables;
+			typeSystemAstBuilder.SupportInitAccessors = settings.InitAccessors;
 			return typeSystemAstBuilder;
 		}
 
@@ -615,6 +614,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			while (blob.RemainingBytes > 0) {
 				var code = blob.DecodeOpCode();
 				switch (code) {
+					case ILOpCode.Newobj:
 					case ILOpCode.Stfld:
 						// async and yield fsms:
 						var token = MetadataTokenHelpers.EntityHandleOrNil(blob.ReadInt32());
@@ -622,14 +622,16 @@ namespace ICSharpCode.Decompiler.CSharp
 							continue;
 						TypeDefinitionHandle fsmTypeDef;
 						switch (token.Kind) {
+							case HandleKind.MethodDefinition:
+								var fsmMethod = module.Metadata.GetMethodDefinition((MethodDefinitionHandle)token);
+								fsmTypeDef = fsmMethod.GetDeclaringType();
+								break;
 							case HandleKind.FieldDefinition:
 								var fsmField = module.Metadata.GetFieldDefinition((FieldDefinitionHandle)token);
 								fsmTypeDef = fsmField.GetDeclaringType();
 								break;
 							case HandleKind.MemberReference:
 								var memberRef = module.Metadata.GetMemberReference((MemberReferenceHandle)token);
-								if (memberRef.GetKind() != MemberReferenceKind.Field)
-									continue;
 								fsmTypeDef = ExtractDeclaringType(memberRef);
 								break;
 							default:
@@ -1345,30 +1347,35 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 				entityDecl.AddAnnotation(function);
 
-				if (function.IsIterator) {
-					if (localSettings.DecompileMemberBodies && !body.Descendants.Any(d => d is YieldReturnStatement || d is YieldBreakStatement)) {
-						body.Add(new YieldBreakStatement());
-					}
-					if (function.IsAsync) {
-						RemoveAttribute(entityDecl, KnownAttribute.AsyncIteratorStateMachine);
-					} else {
-						RemoveAttribute(entityDecl, KnownAttribute.IteratorStateMachine);
-					}
-					if (function.StateMachineCompiledWithMono) {
-						RemoveAttribute(entityDecl, KnownAttribute.DebuggerHidden);
-					}
-				}
-				if (function.IsAsync) {
-					entityDecl.Modifiers |= Modifiers.Async;
-					RemoveAttribute(entityDecl, KnownAttribute.AsyncStateMachine);
-					RemoveAttribute(entityDecl, KnownAttribute.DebuggerStepThrough);
-				}
+				CleanUpMethodDeclaration(entityDecl, body, function, localSettings.DecompileMemberBodies);
 			} catch (Exception innerException) when (!(innerException is OperationCanceledException || innerException is DecompilerException)) {
 				throw new DecompilerException(module, method, innerException);
 			}
 		}
 
-		bool RemoveAttribute(EntityDeclaration entityDecl, KnownAttribute attributeType)
+		internal static void CleanUpMethodDeclaration(EntityDeclaration entityDecl, BlockStatement body, ILFunction function, bool decompileBody = true)
+		{
+			if (function.IsIterator) {
+				if (decompileBody && !body.Descendants.Any(d => d is YieldReturnStatement || d is YieldBreakStatement)) {
+					body.Add(new YieldBreakStatement());
+				}
+				if (function.IsAsync) {
+					RemoveAttribute(entityDecl, KnownAttribute.AsyncIteratorStateMachine);
+				} else {
+					RemoveAttribute(entityDecl, KnownAttribute.IteratorStateMachine);
+				}
+				if (function.StateMachineCompiledWithMono) {
+					RemoveAttribute(entityDecl, KnownAttribute.DebuggerHidden);
+				}
+			}
+			if (function.IsAsync) {
+				entityDecl.Modifiers |= Modifiers.Async;
+				RemoveAttribute(entityDecl, KnownAttribute.AsyncStateMachine);
+				RemoveAttribute(entityDecl, KnownAttribute.DebuggerStepThrough);
+			}
+		}
+
+		internal static bool RemoveAttribute(EntityDeclaration entityDecl, KnownAttribute attributeType)
 		{
 			bool found = false;
 			foreach (var section in entityDecl.Attributes) {

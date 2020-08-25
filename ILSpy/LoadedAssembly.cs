@@ -20,17 +20,21 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Threading;
+
 using ICSharpCode.Decompiler.DebugInfo;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.PdbProvider;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.Util;
 using ICSharpCode.ILSpy.Options;
 
 namespace ICSharpCode.ILSpy
@@ -65,7 +69,7 @@ namespace ICSharpCode.ILSpy
 		public async Task<string> GetTargetFrameworkIdAsync()
 		{
 			var assembly = await GetPEFileAsync().ConfigureAwait(false);
-			return assembly.Reader.DetectTargetFrameworkId() ?? string.Empty;
+			return assembly.DetectTargetFrameworkId() ?? string.Empty;
 		}
 
 		public ReferenceLoadInfo LoadedAssemblyReferencesInfo { get; } = new ReferenceLoadInfo();
@@ -140,11 +144,15 @@ namespace ICSharpCode.ILSpy
 		public string Text {
 			get {
 				if (IsLoaded && !HasLoadError) {
-					var metadata = GetPEFileOrNull()?.Metadata;
+					PEFile module = GetPEFileOrNull();
+					var metadata = module?.Metadata;
 					string versionOrInfo = null;
 					if (metadata != null) {
 						if (metadata.IsAssembly) {
 							versionOrInfo = metadata.GetAssemblyDefinition().Version?.ToString();
+							var tfId = GetTargetFrameworkIdAsync().Result;
+							if (!string.IsNullOrEmpty(tfId))
+								versionOrInfo += ", " + tfId.Replace("Version=", " ");
 						} else {
 							versionOrInfo = ".netmodule";
 						}
@@ -207,15 +215,27 @@ namespace ICSharpCode.ILSpy
 		[ThreadStatic]
 		static int assemblyLoadDisableCount;
 
+		public static IDisposable DisableAssemblyLoad(AssemblyList assemblyList)
+		{
+			assemblyLoadDisableCount++;
+			return new DecrementAssemblyLoadDisableCount(assemblyList);
+		}
+
 		public static IDisposable DisableAssemblyLoad()
 		{
 			assemblyLoadDisableCount++;
-			return new DecrementAssemblyLoadDisableCount();
+			return new DecrementAssemblyLoadDisableCount(MainWindow.Instance.CurrentAssemblyList);
 		}
 
 		sealed class DecrementAssemblyLoadDisableCount : IDisposable
 		{
 			bool disposed;
+			AssemblyList assemblyList;
+
+			public DecrementAssemblyLoadDisableCount(AssemblyList assemblyList)
+			{
+				this.assemblyList = assemblyList;
+			}
 
 			public void Dispose()
 			{
@@ -223,7 +243,7 @@ namespace ICSharpCode.ILSpy
 					disposed = true;
 					assemblyLoadDisableCount--;
 					// clear the lookup cache since we might have stored the lookups failed due to DisableAssemblyLoad()
-					MainWindow.Instance.CurrentAssemblyList.ClearCache();
+					assemblyList.ClearCache();
 				}
 			}
 		}
@@ -235,6 +255,11 @@ namespace ICSharpCode.ILSpy
 			public MyAssemblyResolver(LoadedAssembly parent)
 			{
 				this.parent = parent;
+			}
+
+			public bool IsGacAssembly(IAssemblyReference reference)
+			{
+				return parent.universalResolver?.IsGacAssembly(reference) == true;
 			}
 
 			public PEFile Resolve(Decompiler.Metadata.IAssemblyReference reference)
@@ -265,14 +290,15 @@ namespace ICSharpCode.ILSpy
 			return debugInfoProvider;
 		}
 
-		public LoadedAssembly LookupReferencedAssembly(Decompiler.Metadata.IAssemblyReference reference)
+		public LoadedAssembly LookupReferencedAssembly(IAssemblyReference reference)
 		{
 			if (reference == null)
 				throw new ArgumentNullException(nameof(reference));
+			var tfm = GetTargetFrameworkIdAsync().Result;
 			if (reference.IsWindowsRuntime) {
-				return assemblyList.assemblyLookupCache.GetOrAdd((reference.Name, true), key => LookupReferencedAssemblyInternal(reference, true));
+				return assemblyList.assemblyLookupCache.GetOrAdd((reference.Name, true, tfm), key => LookupReferencedAssemblyInternal(reference, true, tfm));
 			} else {
-				return assemblyList.assemblyLookupCache.GetOrAdd((reference.FullName, false), key => LookupReferencedAssemblyInternal(reference, false));
+				return assemblyList.assemblyLookupCache.GetOrAdd((reference.FullName, false, tfm), key => LookupReferencedAssemblyInternal(reference, false, tfm));
 			}
 		}
 
@@ -296,19 +322,31 @@ namespace ICSharpCode.ILSpy
 		static readonly Dictionary<string, LoadedAssembly> loadingAssemblies = new Dictionary<string, LoadedAssembly>();
 		MyUniversalResolver universalResolver;
 
-		LoadedAssembly LookupReferencedAssemblyInternal(Decompiler.Metadata.IAssemblyReference fullName, bool isWinRT)
+		/// <summary>
+		/// 1) try to find exact match by tfm + full asm name in loaded assemblies
+		/// 2) try to find match in search paths
+		/// 3) if a.deps.json is found: search %USERPROFILE%/.nuget/packages/* as well
+		/// 4) look in /dotnet/shared/{runtime-pack}/{closest-version}
+		/// 5) if the version is retargetable or all zeros or ones, search C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+		/// 6) For "mscorlib.dll" we use the exact same assembly with which ILSpy runs
+		/// 7) Search the GAC
+		/// 8) search C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+		/// 9) try to find match by asm name (no tfm/version) in loaded assemblies
+		/// </summary>
+		LoadedAssembly LookupReferencedAssemblyInternal(IAssemblyReference fullName, bool isWinRT, string tfm)
 		{
-			string GetName(Decompiler.Metadata.IAssemblyReference name) => isWinRT ? name.Name : name.FullName;
+			string key = tfm + ";" + (isWinRT ? fullName.Name : fullName.FullName);
 
 			string file;
 			LoadedAssembly asm;
 			lock (loadingAssemblies) {
 				foreach (LoadedAssembly loaded in assemblyList.GetAssemblies()) {
-					var reader = loaded.GetPEFileOrNull()?.Metadata;
+					var module = loaded.GetPEFileOrNull();
+					var reader = module?.Metadata;
 					if (reader == null || !reader.IsAssembly) continue;
 					var asmDef = reader.GetAssemblyDefinition();
-					var asmDefName = isWinRT ? reader.GetString(asmDef.Name) : reader.GetFullAssemblyName();
-					if (GetName(fullName).Equals(asmDefName, StringComparison.OrdinalIgnoreCase)) {
+					var asmDefName = loaded.GetTargetFrameworkIdAsync().Result + ";" + (isWinRT ? reader.GetString(asmDef.Name) : reader.GetFullAssemblyName());
+					if (key.Equals(asmDefName, StringComparison.OrdinalIgnoreCase)) {
 						LoadedAssemblyReferencesInfo.AddMessageOnce(fullName.FullName, MessageKind.Info, "Success - Found in Assembly List");
 						return loaded;
 					}
@@ -336,8 +374,29 @@ namespace ICSharpCode.ILSpy
 					LoadedAssemblyReferencesInfo.AddMessage(fullName.ToString(), MessageKind.Info, "Success - Loading from: " + file);
 					asm = new LoadedAssembly(assemblyList, file) { IsAutoLoaded = true };
 				} else {
-					LoadedAssemblyReferencesInfo.AddMessageOnce(fullName.ToString(), MessageKind.Error, "Could not find reference: " + fullName);
-					return null;
+					var candidates = new List<(LoadedAssembly assembly, Version version)>();
+
+					foreach (LoadedAssembly loaded in assemblyList.GetAssemblies()) {
+						var module = loaded.GetPEFileOrNull();
+						var reader = module?.Metadata;
+						if (reader == null || !reader.IsAssembly) continue;
+						var asmDef = reader.GetAssemblyDefinition();
+						var asmDefName = reader.GetString(asmDef.Name);
+						if (fullName.Name.Equals(asmDefName, StringComparison.OrdinalIgnoreCase)) {
+							candidates.Add((loaded, asmDef.Version));
+						}
+					}
+
+					if (candidates.Count == 0) {
+						LoadedAssemblyReferencesInfo.AddMessageOnce(fullName.ToString(), MessageKind.Error, "Could not find reference: " + fullName);
+						return null;
+					}
+
+					candidates.SortBy(c => c.version);
+
+					var bestCandidate = candidates.FirstOrDefault(c => c.version >= fullName.Version).assembly ?? candidates.Last().assembly;
+					LoadedAssemblyReferencesInfo.AddMessageOnce(fullName.ToString(), MessageKind.Info, "Success - Found in Assembly List with different TFM or version: " + bestCandidate.fileName);
+					return bestCandidate;
 				}
 				loadingAssemblies.Add(file, asm);
 			}
@@ -348,7 +407,7 @@ namespace ICSharpCode.ILSpy
 				lock (loadingAssemblies) {
 					loadingAssemblies.Remove(file);
 				}
-			});
+			}, DispatcherPriority.Normal);
 			return asm;
 		}
 

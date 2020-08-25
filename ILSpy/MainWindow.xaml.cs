@@ -118,6 +118,8 @@ namespace ICSharpCode.ILSpy
 				AssemblyListManager = AssemblyListManager
 			};
 
+			AssemblyListManager.CreateDefaultAssemblyLists();
+
 			DockWorkspace.Instance.LoadSettings(sessionSettings);
 			InitializeComponent();
 			InitToolPanes();
@@ -406,6 +408,9 @@ namespace ICSharpCode.ILSpy
 					found = true;
 				} else {
 					IEntity mr = await Task.Run(() => FindEntityInRelevantAssemblies(navigateTo, relevantAssemblies));
+					// Make sure we wait for assemblies being loaded...
+					// BeginInvoke in LoadedAssembly.LookupReferencedAssemblyInternal
+					await Dispatcher.InvokeAsync(delegate { }, DispatcherPriority.Normal);
 					if (mr != null && mr.ParentModule.PEFile != null) {
 						found = true;
 						if (AssemblyTreeView.SelectedItem == initialSelection) {
@@ -477,6 +482,12 @@ namespace ICSharpCode.ILSpy
 		static bool CanResolveTypeInPEFile(PEFile module, ITypeReference typeRef, out EntityHandle typeHandle)
 		{
 			if (module == null) {
+				typeHandle = default;
+				return false;
+			}
+
+			// We intentionally ignore reference assemblies, so that the loop continues looking for another assembly that might have a usable definition.
+			if (module.IsReferenceAssembly()) {
 				typeHandle = default;
 				return false;
 			}
@@ -759,10 +770,7 @@ namespace ICSharpCode.ILSpy
 					}
 					AssemblyTreeView.SelectedItem = obj;
 				} else {
-					MessageBox.Show("Navigation failed because the target is hidden or a compiler-generated class.\n" +
-						"Please disable all filters that might hide the item (i.e. activate " +
-						"\"View > Show internal types and members\") and try again.",
-						"ILSpy", MessageBoxButton.OK, MessageBoxImage.Exclamation);
+					MessageBox.Show(Properties.Resources.NavigationFailed, "ILSpy", MessageBoxButton.OK, MessageBoxImage.Exclamation);
 				}
 			}
 		}
@@ -869,7 +877,12 @@ namespace ICSharpCode.ILSpy
 
 		public void JumpToReference(object reference)
 		{
-			JumpToReferenceAsync(reference).HandleExceptions();
+			JumpToReference(reference, inNewTabPage: false);
+		}
+
+		public void JumpToReference(object reference, bool inNewTabPage)
+		{
+			JumpToReferenceAsync(reference, inNewTabPage).HandleExceptions();
 		}
 
 		/// <summary>
@@ -881,34 +894,40 @@ namespace ICSharpCode.ILSpy
 		/// </returns>
 		public Task JumpToReferenceAsync(object reference)
 		{
+			return JumpToReferenceAsync(reference, inNewTabPage: false);
+		}
+
+		public Task JumpToReferenceAsync(object reference, bool inNewTabPage)
+		{
 			decompilationTask = TaskHelper.CompletedTask;
 			switch (reference) {
 				case Decompiler.Disassembler.OpCodeInfo opCode:
 					OpenLink(opCode.Link);
 					break;
-				case ValueTuple<string, PEFile, Handle> unresolvedEntity:
-					string protocol = unresolvedEntity.Item1 ?? "decompile";
+				case EntityReference unresolvedEntity:
+					string protocol = unresolvedEntity.Protocol ?? "decompile";
+					PEFile file = unresolvedEntity.Module;
 					if (protocol != "decompile") {
 						var protocolHandlers = App.ExportProvider.GetExports<IProtocolHandler>();
 						foreach (var handler in protocolHandlers) {
-							var node = handler.Value.Resolve(protocol, unresolvedEntity.Item2, unresolvedEntity.Item3, out bool newTabPage);
+							var node = handler.Value.Resolve(protocol, file, unresolvedEntity.Handle, out bool newTabPage);
 							if (node != null) {
-								SelectNode(node, newTabPage);
+								SelectNode(node, newTabPage || inNewTabPage);
 								return decompilationTask;
 							}
 						}
 					}
-					if (MetadataTokenHelpers.TryAsEntityHandle(MetadataTokens.GetToken(unresolvedEntity.Item3)) != null) {
-						var typeSystem = new DecompilerTypeSystem(unresolvedEntity.Item2, unresolvedEntity.Item2.GetAssemblyResolver(),
-						TypeSystemOptions.Default | TypeSystemOptions.Uncached);
-						reference = typeSystem.MainModule.ResolveEntity((EntityHandle)unresolvedEntity.Item3);
+					var possibleToken = MetadataTokenHelpers.TryAsEntityHandle(MetadataTokens.GetToken(unresolvedEntity.Handle));
+					if (possibleToken != null) {
+						var typeSystem = new DecompilerTypeSystem(file, file.GetAssemblyResolver(), TypeSystemOptions.Default | TypeSystemOptions.Uncached);
+						reference = typeSystem.MainModule.ResolveEntity(possibleToken.Value);
 						goto default;
 					}
 					break;
 				default:
 					ILSpyTreeNode treeNode = FindTreeNode(reference);
 					if (treeNode != null)
-						SelectNode(treeNode);
+						SelectNode(treeNode, inNewTabPage);
 					break;
 			}
 			return decompilationTask;

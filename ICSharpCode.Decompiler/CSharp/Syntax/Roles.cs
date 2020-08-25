@@ -46,11 +46,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		public static readonly Role<VariableInitializer> Variable = new Role<VariableInitializer> ("Variable", VariableInitializer.Null);
 		public static readonly Role<Statement> EmbeddedStatement = new Role<Statement> ("EmbeddedStatement", Statement.Null);
 		public readonly static Role<EntityDeclaration> TypeMemberRole = new Role<EntityDeclaration> ("TypeMember");
-		
+
+		public static readonly Role<VariableDesignation> VariableDesignationRole = new Role<VariableDesignation>("VariableDesignation", VariableDesignation.Null);
 
 		//			public static readonly TokenRole Keyword = new TokenRole ("Keyword", CSharpTokenNode.Null);
-//			public static readonly TokenRole InKeyword = new TokenRole ("InKeyword", CSharpTokenNode.Null);
-			
+		//			public static readonly TokenRole InKeyword = new TokenRole ("InKeyword", CSharpTokenNode.Null);
+
 		// some pre defined constants for most used punctuation
 		public static readonly TokenRole LPar = new TokenRole ("(");
 		public static readonly TokenRole RPar = new TokenRole (")");
@@ -68,11 +69,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		public static readonly TokenRole DoubleColon = new TokenRole ("::");
 		public static readonly TokenRole Arrow = new TokenRole("=>");
 		public static readonly Role<Comment> Comment = new Role<Comment> ("Comment");
-		public static readonly Role<NewLineNode> NewLine = new Role<NewLineNode> ("NewLine");
-		public static readonly Role<WhitespaceNode> Whitespace = new Role<WhitespaceNode> ("Whitespace");
-		public static readonly Role<TextNode> Text = new Role<TextNode> ("Text");
 		public static readonly Role<PreProcessorDirective> PreProcessorDirective = new Role<PreProcessorDirective> ("PreProcessorDirective");
-		public static readonly Role<ErrorNode> Error = new Role<ErrorNode> ("Error");
 			
 		public readonly static Role<AstType> BaseType = new Role<AstType> ("BaseType", AstType.Null);
 

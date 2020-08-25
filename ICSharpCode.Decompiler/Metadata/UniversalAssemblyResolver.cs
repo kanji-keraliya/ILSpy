@@ -23,6 +23,7 @@ using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ICSharpCode.Decompiler.Metadata
 {
@@ -63,18 +64,20 @@ namespace ICSharpCode.Decompiler.Metadata
 		readonly string mainAssemblyFileName;
 		readonly string baseDirectory;
 		readonly List<string> directories = new List<string>();
-		readonly List<string> gac_paths = GetGacPaths();
+		static readonly List<string> gac_paths = GetGacPaths();
 		HashSet<string> targetFrameworkSearchPaths;
 		static readonly DecompilerRuntime decompilerRuntime;
 
 		public void AddSearchDirectory(string directory)
 		{
 			directories.Add(directory);
+			dotNetCorePathFinder?.AddSearchDirectory(directory);
 		}
 
 		public void RemoveSearchDirectory(string directory)
 		{
 			directories.Remove(directory);
+			dotNetCorePathFinder?.RemoveSearchDirectory(directory);
 		}
 
 		public string[] GetSearchDirectories()
@@ -89,16 +92,19 @@ namespace ICSharpCode.Decompiler.Metadata
 		public UniversalAssemblyResolver(string mainAssemblyFileName, bool throwOnError, string targetFramework,
 			PEStreamOptions streamOptions = PEStreamOptions.Default, MetadataReaderOptions metadataOptions = MetadataReaderOptions.Default)
 		{
+			this.mainAssemblyFileName = mainAssemblyFileName;
+			this.throwOnError = throwOnError;
 			this.streamOptions = streamOptions;
 			this.metadataOptions = metadataOptions;
 			this.targetFramework = targetFramework ?? string.Empty;
 			(targetFrameworkIdentifier, targetFrameworkVersion) = ParseTargetFramework(this.targetFramework);
-			this.mainAssemblyFileName = mainAssemblyFileName;
-			this.baseDirectory = Path.GetDirectoryName(mainAssemblyFileName);
-			this.throwOnError = throwOnError;
-			if (string.IsNullOrWhiteSpace(this.baseDirectory))
-				this.baseDirectory = Environment.CurrentDirectory;
-			AddSearchDirectory(baseDirectory);
+
+			if (mainAssemblyFileName != null) {
+				string baseDirectory = Path.GetDirectoryName(mainAssemblyFileName);
+				if (string.IsNullOrWhiteSpace(this.baseDirectory))
+					this.baseDirectory = Environment.CurrentDirectory;
+				AddSearchDirectory(baseDirectory);
+			}
 		}
 
 		internal static (TargetFrameworkIdentifier, Version) ParseTargetFramework(string targetFramework)
@@ -170,6 +176,11 @@ namespace ICSharpCode.Decompiler.Metadata
 			return new PEFile(moduleFileName, new FileStream(moduleFileName, FileMode.Open, FileAccess.Read), streamOptions, metadataOptions);
 		}
 
+		public virtual bool IsGacAssembly(IAssemblyReference reference)
+		{
+			return GetAssemblyInGac(reference) != null;
+		}
+
 		public string FindAssemblyFile(IAssemblyReference name)
 		{
 			if (name.IsWindowsRuntime) {
@@ -183,7 +194,13 @@ namespace ICSharpCode.Decompiler.Metadata
 					if (IsZeroOrAllOnes(targetFrameworkVersion))
 						goto default;
 					if (dotNetCorePathFinder == null) {
-						dotNetCorePathFinder = new DotNetCorePathFinder(mainAssemblyFileName, targetFramework, targetFrameworkIdentifier, targetFrameworkVersion);
+						if (mainAssemblyFileName == null)
+							dotNetCorePathFinder = new DotNetCorePathFinder(targetFrameworkIdentifier, targetFrameworkVersion);
+						else
+							dotNetCorePathFinder = new DotNetCorePathFinder(mainAssemblyFileName, targetFramework, targetFrameworkIdentifier, targetFrameworkVersion);
+						foreach (var directory in directories) {
+							dotNetCorePathFinder.AddSearchDirectory(directory);
+						}
 					}
 					file = dotNetCorePathFinder.TryResolveDotNetCore(name);
 					if (file != null)
@@ -316,9 +333,13 @@ namespace ICSharpCode.Decompiler.Metadata
 			if (assembly != null)
 				return assembly;
 
-			assembly = SearchDirectory(name, framework_dirs);
-			if (assembly != null)
-				return assembly;
+			// when decompiling assemblies that target frameworks prior to 4.0, we can fall back to the 4.0 assemblies in case the target framework is not installed.
+			// but when looking for Microsoft.Build.Framework, Version=15.0.0.0 we should not use the version 4.0 assembly here so that the LoadedAssembly logic can instead fall back to version 15.1.0.0
+			if (name.Version <= new Version(4, 0, 0, 0)) {
+				assembly = SearchDirectory(name, framework_dirs);
+				if (assembly != null)
+					return assembly;
+			}
 
 			if (throwOnError)
 				throw new AssemblyResolutionException(name);
@@ -376,6 +397,9 @@ namespace ICSharpCode.Decompiler.Metadata
 				if (corlib.Version == version || IsSpecialVersionOrRetargetable(reference))
 					return typeof(object).Module.FullyQualifiedName;
 			}
+
+			if (reference.PublicKeyToken == null)
+				return null;
 
 			string path;
 			if (decompilerRuntime == DecompilerRuntime.Mono) {
@@ -465,7 +489,7 @@ namespace ICSharpCode.Decompiler.Metadata
 			return path;
 		}
 
-		static List<string> GetGacPaths()
+		public static List<string> GetGacPaths()
 		{
 			if (decompilerRuntime == DecompilerRuntime.Mono)
 				return GetDefaultMonoGacPaths();
@@ -512,7 +536,7 @@ namespace ICSharpCode.Decompiler.Metadata
 				"gac");
 		}
 
-		string GetAssemblyInGac(IAssemblyReference reference)
+		public static string GetAssemblyInGac(IAssemblyReference reference)
 		{
 			if (reference.PublicKeyToken == null || reference.PublicKeyToken.Length == 0)
 				return null;
@@ -523,7 +547,7 @@ namespace ICSharpCode.Decompiler.Metadata
 			return GetAssemblyInNetGac(reference);
 		}
 
-		string GetAssemblyInMonoGac(IAssemblyReference reference)
+		static string GetAssemblyInMonoGac(IAssemblyReference reference)
 		{
 			for (int i = 0; i < gac_paths.Count; i++) {
 				var gac_path = gac_paths[i];
@@ -535,7 +559,7 @@ namespace ICSharpCode.Decompiler.Metadata
 			return null;
 		}
 
-		string GetAssemblyInNetGac(IAssemblyReference reference)
+		static string GetAssemblyInNetGac(IAssemblyReference reference)
 		{
 			var gacs = new[] { "GAC_MSIL", "GAC_32", "GAC_64", "GAC" };
 			var prefixes = new[] { string.Empty, "v4.0_" };
@@ -566,6 +590,33 @@ namespace ICSharpCode.Decompiler.Metadata
 				Path.Combine(
 					Path.Combine(gac, reference.Name), gac_folder.ToString()),
 				reference.Name + ".dll");
+		}
+
+		/// <summary>
+		/// Gets the names of all assemblies in the GAC.
+		/// </summary>
+		public static IEnumerable<AssemblyNameReference> EnumerateGac()
+		{
+			var gacs = new[] { "GAC_MSIL", "GAC_32", "GAC_64", "GAC" };
+			foreach (var path in GetGacPaths()) {
+				foreach (var gac in gacs) {
+					string rootPath = Path.Combine(path, gac);
+					if (!Directory.Exists(rootPath))
+						continue;
+					foreach (var item in new DirectoryInfo(rootPath).EnumerateFiles("*.dll", SearchOption.AllDirectories)) {
+						string[] name = Path.GetDirectoryName(item.FullName).Substring(rootPath.Length + 1).Split(new[] { "\\" }, StringSplitOptions.RemoveEmptyEntries);
+						if (name.Length != 2)
+							continue;
+						var match = Regex.Match(name[1], $"(v4.0_)?(?<version>[^_]+)_(?<culture>[^_]+)?_(?<publicKey>[^_]+)");
+						if (!match.Success)
+							continue;
+						string culture = match.Groups["culture"].Value;
+						if (string.IsNullOrEmpty(culture))
+							culture = "neutral";
+						yield return AssemblyNameReference.Parse(name[0] + ", Version=" + match.Groups["version"].Value + ", Culture=" + culture + ", PublicKeyToken=" + match.Groups["publicKey"].Value);
+					}
+				}
+			}
 		}
 
 		#endregion

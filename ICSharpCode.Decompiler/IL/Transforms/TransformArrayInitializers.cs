@@ -227,17 +227,34 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return false;
 			if (!dest.MatchLdLoc(v) || !src.MatchLdsFlda(out var field) || !size.MatchLdcI4((int)length))
 				return false;
+			if (!(v.IsSingleDefinition && v.LoadCount == 2))
+				return false;
 			if (field.MetadataToken.IsNil)
 				return false;
-			if (!block.Instructions[pos + 1].MatchStLoc(out var finalStore, out var value))
-				return false;
-			if (!value.MatchLdLoc(v))
-				return false;
+			if (!block.Instructions[pos + 1].MatchStLoc(out var finalStore, out var value)) {
+				var otherLoadOfV = v.LoadInstructions.FirstOrDefault(l => !(l.Parent is Cpblk));
+				if (otherLoadOfV == null)
+					return false;
+				finalStore = otherLoadOfV.Parent.Extract();
+				value = ((StLoc)finalStore.StoreInstructions[0]).Value;
+				if (finalStore == null)
+					return false;
+			}
 			var fd = context.PEFile.Metadata.GetFieldDefinition((FieldDefinitionHandle)field.MetadataToken);
 			if (!fd.HasFlag(System.Reflection.FieldAttributes.HasFieldRVA))
 				return false;
+			if (value.MatchLdLoc(v)) {
+				elementType = ((PointerType)finalStore.Type).ElementType;
+			} else if (value is NewObj { Arguments: { Count: 2 } } newObj
+					&& newObj.Method.DeclaringType.IsKnownType(KnownTypeCode.SpanOfT)
+					&& newObj.Arguments[0].MatchLdLoc(v)
+					&& newObj.Arguments[1].MatchLdcI4((int)length))
+			{
+				elementType = ((ParameterizedType)newObj.Method.DeclaringType).TypeArguments[0];
+			} else {
+				return false;
+			}
 			blob = fd.GetInitialValue(context.PEFile.Reader, context.TypeSystem);
-			elementType = ((PointerType)finalStore.Type).ElementType;
 			return true;
 		}
 
@@ -338,9 +355,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// <summary>
 		/// Handle simple case where RuntimeHelpers.InitializeArray is not used.
 		/// </summary>
-		internal static bool HandleSimpleArrayInitializer(ILFunction function, Block block, int pos, ILVariable store, IType elementType, int[] arrayLength, out (ILInstruction[] Indices, ILInstruction Value)[] values, out int elementCount)
+		internal static bool HandleSimpleArrayInitializer(ILFunction function, Block block, int pos, ILVariable store, IType elementType, int[] arrayLength, out (ILInstruction[] Indices, ILInstruction Value)[] values, out int instructionsToRemove)
 		{
-			elementCount = 0;
+			instructionsToRemove = 0;
+			int elementCount = 0;
 			var length = arrayLength.Aggregate(1, (t, l) => t * l);
 			values = new (ILInstruction[] Indices, ILInstruction Value)[length];
 
@@ -388,15 +406,35 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 			int j = 0;
 			int i = pos;
-			for (; i < block.Instructions.Count; i++) {
-				if (!block.Instructions[i].MatchStObj(out ILInstruction target, out ILInstruction value, out IType type))
+			int step;
+			while (i < block.Instructions.Count) {
+				InstructionCollection<ILInstruction> indices;
+				// stobj elementType(ldelema elementType(ldloc store, indices), value)
+				if (block.Instructions[i].MatchStObj(out ILInstruction target, out ILInstruction value, out IType type)) {
+					if (!(target is LdElema ldelem && ldelem.Array.MatchLdLoc(store)))
+						break;
+					indices = ldelem.Indices;
+					step = 1;
+					// stloc s(ldelema elementType(ldloc store, indices))
+					// stobj elementType(ldloc s, value)
+				} else if (block.Instructions[i].MatchStLoc(out var addressTemporary, out var addressValue)) {
+					if (!(addressTemporary.IsSingleDefinition && addressTemporary.LoadCount == 1))
+						break;
+					if (!(addressValue is LdElema ldelem && ldelem.Array.MatchLdLoc(store)))
+						break;
+					if (!(i + 1 < block.Instructions.Count))
+						break;
+					if (!block.Instructions[i + 1].MatchStObj(out target, out value, out type))
+						break;
+					if (!(target.MatchLdLoc(addressTemporary) && ldelem.Array.MatchLdLoc(store)))
+						break;
+					indices = ldelem.Indices;
+					step = 2;
+				} else {
 					break;
+				}
 				if (value.Descendants.OfType<IInstructionWithVariableOperand>().Any(inst => inst.Variable == store))
 					break;
-				if (!(target is LdElema ldelem && ldelem.Array.MatchLdLoc(store)))
-					break;
-				var indices = ldelem.Indices;
-
 				if (indices.Count != arrayLength.Length)
 					break;
 				bool exact;
@@ -409,11 +447,13 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (exact) {
 						values[j] = (nextIndices, value);
 						elementCount++;
+						instructionsToRemove += step;
 					} else {
 						values[j] = (nextIndices, null);
 					}
 					j++;
 				} while (j < values.Length && !exact);
+				i += step;
 			}
 			if (i < block.Instructions.Count) {
 				if (block.Instructions[i].MatchStObj(out ILInstruction target, out ILInstruction value, out IType type)) {
@@ -430,7 +470,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				values[j] = (nextIndices, null);
 				j++;
 			}
-			if (pos + elementCount >= block.Instructions.Count)
+			if (pos + instructionsToRemove >= block.Instructions.Count)
 				return false;
 			return ShouldTransformToInitializer(function, block, pos, elementCount, length);
 		}
@@ -670,7 +710,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (type.GetStackType() != value.ResultType) {
 				value = new Conv(value, type.ToPrimitiveType(), false, Sign.None); 
 			}
-			return new StObj(new LdElema(type, array, indices), value, type);
+			return new StObj(new LdElema(type, array, indices) { DelayExceptions = true }, value, type);
 		}
 
 		internal static ILInstruction GetNullExpression(IType elementType)

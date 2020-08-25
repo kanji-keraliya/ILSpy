@@ -21,7 +21,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using ICSharpCode.Decompiler.CSharp.Syntax;
-using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.IL.Transforms;
 using ICSharpCode.Decompiler.Semantics;
@@ -103,6 +102,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			public VariableToDeclare ReplacementDueToCollision;
 			public bool InvolvedInCollision;
 			public bool RemovedDueToCollision => ReplacementDueToCollision != null;
+			public bool DeclaredInDeconstruction;
 
 			public VariableToDeclare(ILVariable variable, bool defaultInitialization, InsertionPoint insertionPoint, IdentifierExpression firstUse, int sourceOrder)
 			{
@@ -127,6 +127,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				EnsureExpressionStatementsAreValid(rootNode);
 				FindInsertionPoints(rootNode, 0);
 				ResolveCollisions();
+				InsertDeconstructionVariableDeclarations();
 				InsertVariableDeclarations(context);
 				UpdateAnnotations(rootNode);
 			} finally {
@@ -134,7 +135,6 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				variableDict.Clear();
 			}
 		}
-
 		/// <summary>
 		/// Analyze the input AST (containing undeclared variables)
 		/// for where those variables would be declared by this transform.
@@ -257,7 +257,16 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				if (node is IdentifierExpression identExpr) {
 					var rr = identExpr.GetResolveResult() as ILVariableResolveResult;
 					if (rr != null && VariableNeedsDeclaration(rr.Variable.Kind)) {
-						var variable = rr.Variable;
+						FindInsertionPointForVariable(rr.Variable);
+					} else if (identExpr.Annotation<ILFunction>() is ILFunction localFunction && localFunction.Kind == ILFunctionKind.LocalFunction) {
+						foreach (var v in localFunction.CapturedVariables) {
+							if (VariableNeedsDeclaration(v.Kind))
+								FindInsertionPointForVariable(v);
+						}
+					}
+
+					void FindInsertionPointForVariable(ILVariable variable)
+					{
 						InsertionPoint newPoint;
 						int startIndex = scopeTracking.Count - 1;
 						if (variable.CaptureScope != null && startIndex > 0 && variable.CaptureScope != scopeTracking[startIndex].Scope) {
@@ -282,13 +291,12 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 								}
 							}
 						}
-						VariableToDeclare v;
-						if (variableDict.TryGetValue(variable, out v)) {
+						if (variableDict.TryGetValue(variable, out VariableToDeclare v)) {
 							v.InsertionPoint = FindCommonParent(v.InsertionPoint, newPoint);
 						} else {
 							v = new VariableToDeclare(variable, variable.HasInitialValue,
 								newPoint, identExpr, sourceOrder: variableDict.Count);
-							variableDict.Add(rr.Variable, v);
+							variableDict.Add(variable, v);
 						}
 					}
 				}
@@ -301,7 +309,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		internal static bool VariableNeedsDeclaration(VariableKind kind)
 		{
 			switch (kind) {
-				case VariableKind.PinnedLocal:
+				case VariableKind.PinnedRegionLocal:
 				case VariableKind.Parameter:
 				case VariableKind.ExceptionLocal:
 				case VariableKind.ExceptionStackSlot:
@@ -418,6 +426,44 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			}
 		}
 
+		private void InsertDeconstructionVariableDeclarations()
+		{
+			var usedVariables = new HashSet<ILVariable>();
+			foreach (var g in variableDict.Values.GroupBy(v => v.InsertionPoint.nextNode)) {
+				if (!(g.Key is ExpressionStatement { Expression: AssignmentExpression { Left: TupleExpression left, Operator: AssignmentOperatorType.Assign } assignment }))
+					continue;
+				usedVariables.Clear();
+				var deconstruct = assignment.Annotation<DeconstructInstruction>();
+				if (deconstruct == null || deconstruct.Init.Count > 0 || deconstruct.Conversions.Instructions.Count > 0)
+					continue;
+				if (!deconstruct.Assignments.Instructions.All(IsDeclarableVariable))
+					continue;
+
+				var designation = StatementBuilder.TranslateDeconstructionDesignation(deconstruct, isForeach: false);
+				left.ReplaceWith(new DeclarationExpression { Type = new SimpleType("var"), Designation = designation });
+
+				foreach (var v in usedVariables) {
+					variableDict[v].DeclaredInDeconstruction = true;
+				}
+
+				bool IsDeclarableVariable(ILInstruction inst)
+				{
+					if (!inst.MatchStLoc(out var v, out var value))
+						return false;
+					if (!g.Any(vd => vd.ILVariable == v && !vd.RemovedDueToCollision))
+						return false;
+					if (!usedVariables.Add(v))
+						return false;
+					var expectedType = ((LdLoc)value).Variable.Type;
+					if (!v.Type.Equals(expectedType))
+						return false;
+					if (!(v.Kind == VariableKind.StackSlot || v.Kind == VariableKind.Local))
+						return false;
+					return true;
+				}
+			}
+		}
+
 		bool IsMatchingAssignment(VariableToDeclare v, out AssignmentExpression assignment)
 		{
 			assignment = v.InsertionPoint.nextNode as AssignmentExpression;
@@ -447,7 +493,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			var replacements = new List<(AstNode, AstNode)>();
 			foreach (var (ilVariable, v) in variableDict) {
-				if (v.RemovedDueToCollision)
+				if (v.RemovedDueToCollision || v.DeclaredInDeconstruction)
 					continue;
 
 				if (CombineDeclarationAndInitializer(v, context) && IsMatchingAssignment(v, out AssignmentExpression assignment)) {
@@ -460,6 +506,9 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					}
 					if (v.ILVariable.IsRefReadOnly && type is ComposedType composedType && composedType.HasRefSpecifier) {
 						composedType.HasReadOnlySpecifier = true;
+					}
+					if (v.ILVariable.Kind == VariableKind.PinnedLocal) {
+						type.InsertChildAfter(null, new Comment("pinned", CommentType.MultiLine), Roles.Comment);
 					}
 					var vds = new VariableDeclarationStatement(type, v.Name, assignment.Right.Detach());
 					var init = vds.Variables.Single();
@@ -478,17 +527,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					} else {
 						type = context.TypeSystemAstBuilder.ConvertType(v.Type);
 					}
-					string name;
-					// Variable is not used and discards are allowed, we can simplify this to 'out var _'.
-					// TODO : if there are no other (non-out) variables named '_' and type is 'var', we can simplify this to 'out _'.
-					// However, this needs overload resolution, so we currently cannot do that, as OR does not yet understand out var.
-					// (for the specific rules see https://github.com/dotnet/roslyn/blob/master/docs/features/discards.md)
-					if (context.Settings.Discards && v.ILVariable.LoadCount == 0 && v.ILVariable.StoreCount == 0 && v.ILVariable.AddressCount == 1) {
-						name = "_";
-					} else {
-						name = v.Name;
-					}
-					var ovd = new OutVarDeclarationExpression(type, name);
+					var ovd = new OutVarDeclarationExpression(type, v.Name);
 					ovd.Variable.AddAnnotation(new ILVariableResolveResult(ilVariable));
 					ovd.CopyAnnotationsFrom(dirExpr);
 					replacements.Add((dirExpr, ovd));

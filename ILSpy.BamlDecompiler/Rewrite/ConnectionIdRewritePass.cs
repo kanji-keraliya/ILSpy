@@ -27,6 +27,8 @@ using ICSharpCode.Decompiler.IL.Transforms;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 
+using ILSpy.BamlDecompiler.Xaml;
+
 namespace ILSpy.BamlDecompiler.Rewrite
 {
 	internal class ConnectionIdRewritePass : IRewritePass
@@ -111,11 +113,11 @@ namespace ILSpy.BamlDecompiler.Rewrite
 				}
 			} else {
 				foreach (var ifInst in function.Descendants.OfType<IfInstruction>()) {
-					var comp = ifInst.Condition as Comp;
+					if (!(ifInst.Condition is Comp comp))
+						continue;
 					if (comp.Kind != ComparisonKind.Inequality && comp.Kind != ComparisonKind.Equality)
 						continue;
-					int id;
-					if (!comp.Right.MatchLdcI4(out id))
+					if (!comp.Right.MatchLdcI4(out int id))
 						continue;
 					var events = FindEvents(comp.Kind == ComparisonKind.Inequality ? ifInst.FalseInst : ifInst.TrueInst);
 					result.Add((new LongSet(id), events));
@@ -129,7 +131,7 @@ namespace ILSpy.BamlDecompiler.Rewrite
 			var events = new List<EventRegistration>();
 
 			switch (inst) {
-				case Block b:
+				case Block _:
 					foreach (var node in ((Block)inst).Instructions) {
 						FindEvents(node, events);
 					}
@@ -150,8 +152,7 @@ namespace ILSpy.BamlDecompiler.Rewrite
 			if (call == null || call.OpCode == OpCode.NewObj)
 				return;
 
-			string eventName, handlerName;
-			if (IsAddEvent(call, out eventName, out handlerName) || IsAddAttachedEvent(call, out eventName, out handlerName))
+			if (IsAddEvent(call, out string eventName, out string handlerName) || IsAddAttachedEvent(call, out eventName, out handlerName))
 				events.Add(new EventRegistration { EventName = eventName, MethodName = handlerName });
 		}
 
@@ -164,8 +165,7 @@ namespace ILSpy.BamlDecompiler.Rewrite
 				var addMethod = call.Method;
 				if (addMethod.Name != "AddHandler" || addMethod.Parameters.Count != 2)
 					return false;
-				IField field;
-				if (!call.Arguments[1].MatchLdsFld(out field))
+				if (!call.Arguments[1].MatchLdsFld(out IField field))
 					return false;
 				eventName = field.DeclaringType.Name + "." + field.Name;
 				if (eventName.EndsWith("Event", StringComparison.Ordinal) && eventName.Length > "Event".Length)
@@ -200,6 +200,7 @@ namespace ILSpy.BamlDecompiler.Rewrite
 				if (ldftn.OpCode != OpCode.LdFtn && ldftn.OpCode != OpCode.LdVirtFtn)
 					return false;
 				handlerName = ((IInstructionWithMethodOperand)ldftn).Method.Name;
+				handlerName = XamlUtils.EscapeName(handlerName);
 				return true;
 			}
 

@@ -35,6 +35,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitCastExpression(CastExpression castExpression);
 		void VisitCheckedExpression(CheckedExpression checkedExpression);
 		void VisitConditionalExpression(ConditionalExpression conditionalExpression);
+		void VisitDeclarationExpression(DeclarationExpression declarationExpression);
 		void VisitDefaultValueExpression(DefaultValueExpression defaultValueExpression);
 		void VisitDirectionExpression(DirectionExpression directionExpression);
 		void VisitIdentifierExpression(IdentifierExpression identifierExpression);
@@ -103,6 +104,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitSwitchStatement(SwitchStatement switchStatement);
 		void VisitSwitchSection(SwitchSection switchSection);
 		void VisitCaseLabel(CaseLabel caseLabel);
+		void VisitSwitchExpression(SwitchExpression switchExpression);
+		void VisitSwitchExpressionSection(SwitchExpressionSection switchExpressionSection);
 		void VisitThrowStatement(ThrowStatement throwStatement);
 		void VisitTryCatchStatement(TryCatchStatement tryCatchStatement);
 		void VisitCatchClause(CatchClause catchClause);
@@ -137,14 +140,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		void VisitMemberType(MemberType memberType);
 		void VisitTupleType(TupleAstType tupleType);
 		void VisitTupleTypeElement(TupleTypeElement tupleTypeElement);
+		void VisitFunctionPointerType(FunctionPointerType functionPointerType);
 		void VisitComposedType(ComposedType composedType);
 		void VisitArraySpecifier(ArraySpecifier arraySpecifier);
 		void VisitPrimitiveType(PrimitiveType primitiveType);
 		
 		void VisitComment(Comment comment);
-		void VisitNewLine(NewLineNode newLineNode);
-		void VisitWhitespace(WhitespaceNode whitespaceNode);
-		void VisitText(TextNode textNode);
 		void VisitPreProcessorDirective(PreProcessorDirective preProcessorDirective);
 		void VisitDocumentationReference(DocumentationReference documentationReference);
 		
@@ -155,7 +156,10 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 		void VisitInterpolation(Interpolation interpolation);
 		void VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText);
-		
+
+		void VisitSingleVariableDesignation(SingleVariableDesignation singleVariableDesignation);
+		void VisitParenthesizedVariableDesignation(ParenthesizedVariableDesignation parenthesizedVariableDesignation);
+
 		void VisitNullNode(AstNode nullNode);
 		void VisitErrorNode(AstNode errorNode);
 		void VisitPatternPlaceholder(AstNode placeholder, PatternMatching.Pattern pattern);
@@ -177,6 +181,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitCastExpression(CastExpression castExpression);
 		S VisitCheckedExpression(CheckedExpression checkedExpression);
 		S VisitConditionalExpression(ConditionalExpression conditionalExpression);
+		S VisitDeclarationExpression(DeclarationExpression declarationExpression);
 		S VisitDefaultValueExpression(DefaultValueExpression defaultValueExpression);
 		S VisitDirectionExpression(DirectionExpression directionExpression);
 		S VisitIdentifierExpression(IdentifierExpression identifierExpression);
@@ -245,6 +250,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitSwitchStatement(SwitchStatement switchStatement);
 		S VisitSwitchSection(SwitchSection switchSection);
 		S VisitCaseLabel(CaseLabel caseLabel);
+		S VisitSwitchExpression(SwitchExpression switchExpression);
+		S VisitSwitchExpressionSection(SwitchExpressionSection switchExpressionSection);
 		S VisitThrowStatement(ThrowStatement throwStatement);
 		S VisitTryCatchStatement(TryCatchStatement tryCatchStatement);
 		S VisitCatchClause(CatchClause catchClause);
@@ -279,14 +286,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitMemberType(MemberType memberType);
 		S VisitTupleType(TupleAstType tupleType);
 		S VisitTupleTypeElement(TupleTypeElement tupleTypeElement);
+		S VisitFunctionPointerType(FunctionPointerType functionPointerType);
 		S VisitComposedType(ComposedType composedType);
 		S VisitArraySpecifier(ArraySpecifier arraySpecifier);
 		S VisitPrimitiveType(PrimitiveType primitiveType);
 		
 		S VisitComment(Comment comment);
-		S VisitWhitespace(WhitespaceNode whitespaceNode);
-		S VisitText(TextNode textNode);
-		S VisitNewLine(NewLineNode newLineNode);
 		S VisitPreProcessorDirective(PreProcessorDirective preProcessorDirective);
 		S VisitDocumentationReference(DocumentationReference documentationReference);
 		
@@ -297,6 +302,9 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 		S VisitInterpolation(Interpolation interpolation);
 		S VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText);
+
+		S VisitSingleVariableDesignation(SingleVariableDesignation singleVariableDesignation);
+		S VisitParenthesizedVariableDesignation(ParenthesizedVariableDesignation parenthesizedVariableDesignation);
 
 		S VisitNullNode(AstNode nullNode);
 		S VisitErrorNode(AstNode errorNode);
@@ -319,6 +327,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitCastExpression(CastExpression castExpression, T data);
 		S VisitCheckedExpression(CheckedExpression checkedExpression, T data);
 		S VisitConditionalExpression(ConditionalExpression conditionalExpression, T data);
+		S VisitDeclarationExpression(DeclarationExpression declarationExpression, T data);
 		S VisitDefaultValueExpression(DefaultValueExpression defaultValueExpression, T data);
 		S VisitDirectionExpression(DirectionExpression directionExpression, T data);
 		S VisitIdentifierExpression(IdentifierExpression identifierExpression, T data);
@@ -387,6 +396,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitSwitchStatement(SwitchStatement switchStatement, T data);
 		S VisitSwitchSection(SwitchSection switchSection, T data);
 		S VisitCaseLabel(CaseLabel caseLabel, T data);
+		S VisitSwitchExpression(SwitchExpression switchExpression, T data);
+		S VisitSwitchExpressionSection(SwitchExpressionSection switchExpressionSection, T data);
 		S VisitThrowStatement(ThrowStatement throwStatement, T data);
 		S VisitTryCatchStatement(TryCatchStatement tryCatchStatement, T data);
 		S VisitCatchClause(CatchClause catchClause, T data);
@@ -421,14 +432,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		S VisitMemberType(MemberType memberType, T data);
 		S VisitTupleType(TupleAstType tupleType, T data);
 		S VisitTupleTypeElement(TupleTypeElement tupleTypeElement, T data);
+		S VisitFunctionPointerType(FunctionPointerType functionPointerType, T data);
 		S VisitComposedType(ComposedType composedType, T data);
 		S VisitArraySpecifier(ArraySpecifier arraySpecifier, T data);
 		S VisitPrimitiveType(PrimitiveType primitiveType, T data);
 		
 		S VisitComment(Comment comment, T data);
-		S VisitNewLine(NewLineNode newLineNode, T data);
-		S VisitWhitespace(WhitespaceNode whitespaceNode, T data);
-		S VisitText(TextNode textNode, T data);
 		S VisitPreProcessorDirective(PreProcessorDirective preProcessorDirective, T data);
 		S VisitDocumentationReference(DocumentationReference documentationReference, T data);
 		
@@ -439,6 +448,9 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 		S VisitInterpolation(Interpolation interpolation, T data);
 		S VisitInterpolatedStringText(InterpolatedStringText interpolatedStringText, T data);
+
+		S VisitSingleVariableDesignation(SingleVariableDesignation singleVariableDesignation, T data);
+		S VisitParenthesizedVariableDesignation(ParenthesizedVariableDesignation parenthesizedVariableDesignation, T data);
 
 		S VisitNullNode(AstNode nullNode, T data);
 		S VisitErrorNode(AstNode errorNode, T data);

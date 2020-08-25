@@ -5,7 +5,7 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <AssemblyName>ILSpy.BamlDecompiler.Plugin</AssemblyName>
-    <LangVersion>7.2</LangVersion>
+    <LangVersion>8.0</LangVersion>
 
     <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
 
@@ -67,7 +67,6 @@
     <Compile Include="Baml\KnownThings.g.cs" />
     <Compile Include="Baml\KnownTypes.cs" />
     <Compile Include="BamlConnectionId.cs" />
-    <Compile Include="Extensions.cs" />
     <Compile Include="Handlers\Blocks\ConstructorParametersHandler.cs" />
     <Compile Include="Handlers\Blocks\DocumentHandler.cs" />
     <Compile Include="Handlers\Blocks\ElementHandler.cs" />

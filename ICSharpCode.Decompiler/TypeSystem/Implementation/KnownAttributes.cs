@@ -41,6 +41,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		TupleElementNames,
 		Nullable,
 		NullableContext,
+		NullablePublicOnly,
 		Conditional,
 		Obsolete,
 		IsReadOnly,
@@ -97,11 +98,14 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 		// Security attributes:
 		PermissionSet,
+
+		// C# 9 attributes:
+		NativeInteger,
 	}
 
 	static class KnownAttributes
 	{
-		internal const int Count = (int)KnownAttribute.PermissionSet + 1;
+		internal const int Count = (int)KnownAttribute.NativeInteger + 1;
 
 		static readonly TopLevelTypeName[] typeNames = new TopLevelTypeName[Count]{
 			default,
@@ -111,6 +115,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			new TopLevelTypeName("System.Runtime.CompilerServices", nameof(TupleElementNamesAttribute)),
 			new TopLevelTypeName("System.Runtime.CompilerServices", "NullableAttribute"),
 			new TopLevelTypeName("System.Runtime.CompilerServices", "NullableContextAttribute"),
+			new TopLevelTypeName("System.Runtime.CompilerServices", "NullablePublicOnlyAttribute"),
 			new TopLevelTypeName("System.Diagnostics", nameof(ConditionalAttribute)),
 			new TopLevelTypeName("System", nameof(ObsoleteAttribute)),
 			new TopLevelTypeName("System.Runtime.CompilerServices", "IsReadOnlyAttribute"),
@@ -158,6 +163,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			new TopLevelTypeName("System.Runtime.InteropServices", nameof(MarshalAsAttribute)),
 			// Security attributes:
 			new TopLevelTypeName("System.Security.Permissions", "PermissionSetAttribute"),
+			// C# 9 attributes:
+			new TopLevelTypeName("System.Runtime.CompilerServices", "NativeIntegerAttribute"),
 		};
 
 		public static ref readonly TopLevelTypeName GetTypeName(this KnownAttribute attr)

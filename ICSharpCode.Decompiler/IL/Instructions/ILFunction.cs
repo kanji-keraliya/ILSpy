@@ -74,6 +74,12 @@ namespace ICSharpCode.Decompiler.IL
 		public BlockContainer DeclarationScope { get; internal set; }
 
 		/// <summary>
+		/// Gets the set of captured variables by this ILFunction.
+		/// </summary>
+		/// <remarks>This is populated by the <see cref="TransformDisplayClassUsage" /> step.</remarks>
+		public HashSet<ILVariable> CapturedVariables { get; } = new HashSet<ILVariable>();
+
+		/// <summary>
 		/// List of warnings of ILReader.
 		/// </summary>
 		public List<string> Warnings { get; } = new List<string>();
@@ -160,13 +166,11 @@ namespace ICSharpCode.Decompiler.IL
 
 		/// <summary>
 		/// Return type of this function.
-		/// Might be null, if this function was not created from metadata.
 		/// </summary>
 		public readonly IType ReturnType;
 
 		/// <summary>
 		/// List of parameters of this function.
-		/// Might be null, if this function was not created from metadata.
 		/// </summary>
 		public readonly IReadOnlyList<IParameter> Parameters;
 
@@ -182,17 +186,16 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		/// <remarks>
 		/// Use <see cref="ILReader"/> to create ILAst.
-		/// <paramref name="method"/> may be null.
 		/// </remarks>
 		public ILFunction(IMethod method, int codeSize, GenericContext genericContext, ILInstruction body, ILFunctionKind kind = ILFunctionKind.TopLevelFunction) : base(OpCode.ILFunction)
 		{
 			this.Method = method;
-			this.Name = Method?.Name;
+			this.Name = method.Name;
 			this.CodeSize = codeSize;
 			this.GenericContext = genericContext;
 			this.Body = body;
-			this.ReturnType = Method?.ReturnType;
-			this.Parameters = Method?.Parameters;
+			this.ReturnType = method.ReturnType;
+			this.Parameters = method.Parameters;
 			this.Variables = new ILVariableCollection(this);
 			this.LocalFunctions = new InstructionCollection<ILFunction>(this, 1);
 			this.kind = kind;
@@ -201,15 +204,15 @@ namespace ICSharpCode.Decompiler.IL
 		/// <summary>
 		/// This constructor is only to be used by the TransformExpressionTrees step.
 		/// </summary>
-		internal ILFunction(IType returnType, IReadOnlyList<IParameter> parameters, GenericContext genericContext, ILInstruction body) : base(OpCode.ILFunction)
+		internal ILFunction(IType returnType, IReadOnlyList<IParameter> parameters, GenericContext genericContext, ILInstruction body, ILFunctionKind kind = ILFunctionKind.TopLevelFunction) : base(OpCode.ILFunction)
 		{
 			this.GenericContext = genericContext;
 			this.Body = body;
-			this.ReturnType = returnType;
-			this.Parameters = parameters;
+			this.ReturnType = returnType ?? throw new ArgumentNullException(nameof(returnType));
+			this.Parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
 			this.Variables = new ILVariableCollection(this);
 			this.LocalFunctions = new InstructionCollection<ILFunction>(this, 1);
-			this.kind = ILFunctionKind.ExpressionTree;
+			this.kind = kind;
 		}
 
 		internal override void CheckInvariant(ILPhase phase)
@@ -352,7 +355,16 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayThrow | InstructionFlags.ControlFlow;
 			}
 		}
-		
+
+		internal override bool CanInlineIntoSlot(int childIndex, ILInstruction expressionBeingMoved)
+		{
+			// With expression trees, we occasionally need to inline constants into an existing expression tree.
+			// Only allow this for completely pure constants; a MayReadLocals effect would already be problematic
+			// because we're essentially delaying evaluation of the expression until the ILFunction is called.
+			Debug.Assert(childIndex == 0);
+			return kind == ILFunctionKind.ExpressionTree && expressionBeingMoved.Flags == InstructionFlags.None;
+		}
+
 		/// <summary>
 		/// Apply a list of transforms to this function.
 		/// </summary>

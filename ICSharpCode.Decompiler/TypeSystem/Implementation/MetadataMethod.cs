@@ -50,6 +50,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		IType returnType;
 		byte returnTypeIsRefReadonly = ThreeState.Unknown;
 		byte thisIsRefReadonly = ThreeState.Unknown;
+		bool isInitOnly;
 
 		internal MetadataMethod(MetadataModule module, MethodDefinitionHandle handle)
 		{
@@ -150,6 +151,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 		}
 
+		public bool IsInitOnly {
+			get {
+				var returnType = LazyInit.VolatileRead(ref this.returnType);
+				if (returnType == null)
+					DecodeSignature();
+				return this.isInitOnly;
+			}
+		}
+
 		internal Nullability NullableContext {
 			get {
 				var methodDef = module.metadata.GetMethodDefinition(handle);
@@ -163,23 +173,29 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			var genericContext = new GenericContext(DeclaringType.TypeParameters, this.TypeParameters);
 			IType returnType;
 			IParameter[] parameters;
+			ModifiedType mod;
 			try {
 				var nullableContext = methodDef.GetCustomAttributes().GetNullableContext(module.metadata) ?? DeclaringTypeDefinition.NullableContext;
 				var signature = methodDef.DecodeSignature(module.TypeProvider, genericContext);
-				(returnType, parameters) = DecodeSignature(module, this, signature, methodDef.GetParameters(), nullableContext);
+				(returnType, parameters, mod) = DecodeSignature(module, this, signature, methodDef.GetParameters(), nullableContext, module.OptionsForEntity(this));
 			} catch (BadImageFormatException) {
 				returnType = SpecialType.UnknownType;
 				parameters = Empty<IParameter>.Array;
+				mod = null;
 			}
+			this.isInitOnly = mod is { Modifier: { Name: "IsExternalInit", Namespace: "System.Runtime.CompilerServices" } };
 			LazyInit.GetOrSet(ref this.returnType, returnType);
 			LazyInit.GetOrSet(ref this.parameters, parameters);
 		}
 
-		internal static (IType, IParameter[]) DecodeSignature(MetadataModule module, IParameterizedMember owner, MethodSignature<IType> signature, ParameterHandleCollection? parameterHandles, Nullability nullableContext)
+		internal static (IType returnType, IParameter[] parameters, ModifiedType returnTypeModifier) DecodeSignature(
+			MetadataModule module, IParameterizedMember owner,
+			MethodSignature<IType> signature, ParameterHandleCollection? parameterHandles,
+			Nullability nullableContext, TypeSystemOptions typeSystemOptions,
+			CustomAttributeHandleCollection? returnTypeAttributes = null)
 		{
 			var metadata = module.metadata;
 			int i = 0;
-			CustomAttributeHandleCollection? returnTypeAttributes = null;
 			IParameter[] parameters = new IParameter[signature.RequiredParameterCount
 				+ (signature.Header.CallingConvention == SignatureCallingConvention.VarArgs ? 1 : 0)];
 			IType parameterType;
@@ -187,8 +203,14 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				foreach (var parameterHandle in parameterHandles) {
 					var par = metadata.GetParameter(parameterHandle);
 					if (par.SequenceNumber == 0) {
-						// "parameter" holds return type attributes
-						returnTypeAttributes = par.GetCustomAttributes();
+						// "parameter" holds return type attributes.
+						// Note: for properties, the attributes normally stored on a method's return type
+						// are instead stored as normal attributes on the property.
+						// So MetadataProperty provides a non-null value for returnTypeAttributes,
+						// which then should be preferred over the attributes on the accessor's parameters.
+						if (returnTypeAttributes == null) {
+							returnTypeAttributes = par.GetCustomAttributes();
+						}
 					} else if (par.SequenceNumber > 0 && i < signature.RequiredParameterCount) {
 						// "Successive rows of the Param table that are owned by the same method shall be
 						// ordered by increasing Sequence value - although gaps in the sequence are allowed"
@@ -196,14 +218,14 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 						// Fill gaps in the sequence with non-metadata parameters:
 						while (i < par.SequenceNumber - 1) {
 							parameterType = ApplyAttributeTypeVisitor.ApplyAttributesToType(
-								signature.ParameterTypes[i], module.Compilation, null, metadata, module.TypeSystemOptions, nullableContext);
+								signature.ParameterTypes[i], module.Compilation, null, metadata, typeSystemOptions, nullableContext);
 							parameters[i] = new DefaultParameter(parameterType, name: string.Empty, owner,
 								referenceKind: parameterType.Kind == TypeKind.ByReference ? ReferenceKind.Ref : ReferenceKind.None);
 							i++;
 						}
 						parameterType = ApplyAttributeTypeVisitor.ApplyAttributesToType(
 							signature.ParameterTypes[i], module.Compilation,
-							par.GetCustomAttributes(), metadata, module.TypeSystemOptions, nullableContext);
+							par.GetCustomAttributes(), metadata, typeSystemOptions, nullableContext);
 						parameters[i] = new MetadataParameter(module, owner, parameterType, parameterHandle);
 						i++;
 					}
@@ -211,7 +233,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 			while (i < signature.RequiredParameterCount) {
 				parameterType = ApplyAttributeTypeVisitor.ApplyAttributesToType(
-					signature.ParameterTypes[i], module.Compilation, null, metadata, module.TypeSystemOptions, nullableContext);
+					signature.ParameterTypes[i], module.Compilation, null, metadata, typeSystemOptions, nullableContext);
 				parameters[i] = new DefaultParameter(parameterType, name: string.Empty, owner,
 					referenceKind: parameterType.Kind == TypeKind.ByReference ? ReferenceKind.Ref : ReferenceKind.None);
 				i++;
@@ -222,8 +244,8 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 			Debug.Assert(i == parameters.Length);
 			var returnType = ApplyAttributeTypeVisitor.ApplyAttributesToType(signature.ReturnType,
-				module.Compilation, returnTypeAttributes, metadata, module.TypeSystemOptions, nullableContext);
-			return (returnType, parameters);
+				module.Compilation, returnTypeAttributes, metadata, typeSystemOptions, nullableContext);
+			return (returnType, parameters, signature.ReturnType as ModifiedType);
 		}
 		#endregion
 
@@ -445,7 +467,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		#endregion
 
 		public Accessibility Accessibility => GetAccessibility(attributes);
-		
+
 		internal static Accessibility GetAccessibility(MethodAttributes attr)
 		{
 			switch (attr & MethodAttributes.MemberAccessMask) {

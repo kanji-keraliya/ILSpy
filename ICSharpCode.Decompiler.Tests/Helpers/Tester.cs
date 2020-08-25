@@ -57,6 +57,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		ReferenceVisualBasic = 0x40,
 		ReferenceCore = 0x80,
 		GeneratePdb = 0x100,
+		Preview = 0x200
 	}
 
 	[Flags]
@@ -184,7 +185,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			return Regex.Replace(il, @"'<PrivateImplementationDetails>\{[0-9A-F-]+\}'", "'<PrivateImplementationDetails>'");
 		}
 
-		static readonly string coreRefAsmPath = new DotNetCorePathFinder(new Version(3, 1)).GetReferenceAssemblyPath(".NETCoreApp, Version = v3.1");
+		static readonly string coreRefAsmPath = new DotNetCorePathFinder(TargetFrameworkIdentifier.NETCoreApp, new Version(3, 1)).GetReferenceAssemblyPath(".NETCoreApp, Version = v3.1");
 		
 		static readonly string refAsmPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
 			@"Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2");
@@ -250,6 +251,10 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				preprocessorSymbols.Add("VB11");
 				preprocessorSymbols.Add("VB14");
 				preprocessorSymbols.Add("VB15");
+
+				if (flags.HasFlag(CompilerOptions.Preview)) {
+					preprocessorSymbols.Add("CS90");
+				}
 			} else if (flags.HasFlag(CompilerOptions.UseMcs)) {
 				preprocessorSymbols.Add("MCS");
 			} else {
@@ -271,7 +276,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			if (flags.HasFlag(CompilerOptions.UseRoslyn)) {
 				var parseOptions = new CSharpParseOptions(
 					preprocessorSymbols: preprocessorSymbols.ToArray(),
-					languageVersion: Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp8
+					languageVersion: flags.HasFlag(CompilerOptions.Preview) ? Microsoft.CodeAnalysis.CSharp.LanguageVersion.Preview : Microsoft.CodeAnalysis.CSharp.LanguageVersion.CSharp8
 				);
 				var syntaxTrees = sourceFileNames.Select(f => SyntaxFactory.ParseSyntaxTree(File.ReadAllText(f), parseOptions, path: f, encoding: Encoding.UTF8));
 				if (flags.HasFlag(CompilerOptions.ReferenceCore)) {
@@ -399,7 +404,11 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		internal static DecompilerSettings GetSettings(CompilerOptions cscOptions)
 		{
 			if (cscOptions.HasFlag(CompilerOptions.UseRoslyn)) {
-				return new DecompilerSettings(CSharp.LanguageVersion.Latest);
+				if (cscOptions.HasFlag(CompilerOptions.Preview)) {
+					return new DecompilerSettings(CSharp.LanguageVersion.Latest);
+				} else {
+					return new DecompilerSettings(CSharp.LanguageVersion.CSharp8_0);
+				}
 			} else {
 				return new DecompilerSettings(CSharp.LanguageVersion.CSharp5);
 			}

@@ -31,9 +31,13 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		Local,
 		/// <summary>
-		/// A pinned local variable
+		/// A pinned local variable (not associated with a pinned region)
 		/// </summary>
 		PinnedLocal,
+		/// <summary>
+		/// A pinned local variable (associated with a pinned region)
+		/// </summary>
+		PinnedRegionLocal,
 		/// <summary>
 		/// A local variable used as using-resource variable.
 		/// </summary>
@@ -71,6 +75,14 @@ namespace ICSharpCode.Decompiler.IL
 		/// Local variable that holds the display class used for lambdas within this function.
 		/// </summary>
 		DisplayClassLocal,
+		/// <summary>
+		/// Local variable declared within a pattern match.
+		/// </summary>
+		PatternLocal,
+		/// <summary>
+		/// Temporary variable declared in a deconstruction init section.
+		/// </summary>
+		DeconstructionInitTemporary,
 	}
 
 	static class VariableKindExtensions
@@ -88,6 +100,7 @@ namespace ICSharpCode.Decompiler.IL
 				case VariableKind.ForeachLocal:
 				case VariableKind.UsingLocal:
 				case VariableKind.PinnedLocal:
+				case VariableKind.PinnedRegionLocal:
 				case VariableKind.DisplayClassLocal:
 					return true;
 				default:
@@ -157,6 +170,7 @@ namespace ICSharpCode.Decompiler.IL
 				case VariableKind.Local:
 				case VariableKind.ForeachLocal:
 				case VariableKind.PinnedLocal:
+				case VariableKind.PinnedRegionLocal:
 				case VariableKind.UsingLocal:
 				case VariableKind.ExceptionLocal:
 				case VariableKind.DisplayClassLocal:
@@ -338,6 +352,17 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		/// <summary>
+		/// Gets whether the variable is dead - unused.
+		/// </summary>
+		public bool IsDead {
+			get {
+				return StoreCount == (HasInitialValue ? 1 : 0)
+					&& LoadCount == 0
+					&& AddressCount == 0;
+			}
+		}
+
+		/// <summary>
 		/// The field which was converted to a local variable.
 		/// Set when the variable is from a 'yield return' or 'async' state machine.
 		/// </summary>
@@ -386,6 +411,9 @@ namespace ICSharpCode.Decompiler.IL
 				case VariableKind.PinnedLocal:
 					output.Write("pinned local ");
 					break;
+				case VariableKind.PinnedRegionLocal:
+					output.Write("PinnedRegion local ");
+					break;
 				case VariableKind.Parameter:
 					output.Write("param ");
 					break;
@@ -413,6 +441,12 @@ namespace ICSharpCode.Decompiler.IL
 				case VariableKind.DisplayClassLocal:
 					output.Write("display_class local ");
 					break;
+				case VariableKind.PatternLocal:
+					output.Write("pattern local ");
+					break;
+				case VariableKind.DeconstructionInitTemporary:
+					output.Write("deconstruction init temporary ");
+					break;
 				default:
 					throw new ArgumentOutOfRangeException();
 			}
@@ -420,7 +454,7 @@ namespace ICSharpCode.Decompiler.IL
 			output.Write(" : ");
 			Type.WriteTo(output);
 			output.Write('(');
-			if (Kind == VariableKind.Parameter || Kind == VariableKind.Local || Kind == VariableKind.PinnedLocal) {
+			if (Kind == VariableKind.Parameter || Kind == VariableKind.Local || Kind == VariableKind.PinnedLocal || Kind == VariableKind.PinnedRegionLocal) {
 				output.Write("Index={0}, ", Index);
 			}
 			output.Write("LoadCount={0}, AddressCount={1}, StoreCount={2})", LoadCount, AddressCount, StoreCount);

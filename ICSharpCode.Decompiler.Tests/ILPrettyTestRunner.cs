@@ -109,13 +109,13 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void FSharpUsing_Debug()
 		{
-			Run(settings: new DecompilerSettings { RemoveDeadStores = true });
+			Run(settings: new DecompilerSettings { RemoveDeadStores = true, UseEnhancedUsing = false });
 		}
 
 		[Test]
 		public void FSharpUsing_Release()
 		{
-			Run(settings: new DecompilerSettings { RemoveDeadStores = true });
+			Run(settings: new DecompilerSettings { RemoveDeadStores = true, UseEnhancedUsing = false });
 		}
 
 		[Test]
@@ -127,13 +127,13 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void CS1xSwitch_Debug()
 		{
-			Run();
+			Run(settings: new DecompilerSettings { SwitchExpressions = false });
 		}
 
 		[Test]
 		public void CS1xSwitch_Release()
 		{
-			Run();
+			Run(settings: new DecompilerSettings { SwitchExpressions = false });
 		}
 
 		[Test]
@@ -179,6 +179,12 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public void Issue2104()
+		{
+			Run();
+		}
+
+		[Test]
 		public void ConstantBlobs()
 		{
 			Run();
@@ -192,6 +198,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public void Unsafe()
+		{
+			Run();
+		}
+
+		[Test]
+		public void CallIndirect()
 		{
 			Run();
 		}

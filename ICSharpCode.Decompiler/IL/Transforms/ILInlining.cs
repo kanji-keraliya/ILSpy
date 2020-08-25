@@ -21,6 +21,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
 
 namespace ICSharpCode.Decompiler.IL.Transforms
 {
@@ -30,6 +31,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		None = 0,
 		Aggressive = 1,
 		IntroduceNamedArguments = 2,
+		FindDeconstruction = 4,
 	}
 
 	/// <summary>
@@ -52,15 +54,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 		public void Run(Block block, int pos, StatementTransformContext context)
 		{
-			InlineOneIfPossible(block, pos, OptionsForBlock(block, pos), context: context);
+			InlineOneIfPossible(block, pos, OptionsForBlock(block, pos, context), context: context);
 		}
 
-		internal static InliningOptions OptionsForBlock(Block block, int pos)
+		internal static InliningOptions OptionsForBlock(Block block, int pos, ILTransformContext context)
 		{
 			InliningOptions options = InliningOptions.None;
-			if (IsCatchWhenBlock(block))
+			if (context.Settings.AggressiveInlining || IsCatchWhenBlock(block)) {
 				options |= InliningOptions.Aggressive;
-			else {
+			} else {
 				var function = block.Ancestors.OfType<ILFunction>().FirstOrDefault();
 				var inst = block.Instructions[pos];
 				if (IsInConstructorInitializer(function, inst))
@@ -76,7 +78,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			for (int i = instructions.Count - 1; i >= 0; i--) {
 				if (instructions[i] is StLoc inst) {
 					InliningOptions options = InliningOptions.None;
-					if (IsCatchWhenBlock(block) || IsInConstructorInitializer(function, inst))
+					if (context.Settings.AggressiveInlining || IsCatchWhenBlock(block) || IsInConstructorInitializer(function, inst))
 						options = InliningOptions.Aggressive;
 					if (InlineOneIfPossible(block, i, options, context)) {
 						modified = true;
@@ -249,21 +251,26 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			// Thus, we have to ensure we're operating on an r-value.
 			// Additionally, we cannot inline in cases where the C# compiler prohibits the direct use
 			// of the rvalue (e.g. M(ref (MyStruct)obj); is invalid).
-			if (!IsUsedAsThisPointerInCall(loadInst, out var method))
+			if (IsUsedAsThisPointerInCall(loadInst, out var method)) {
+				switch (ClassifyExpression(inlinedExpression)) {
+					case ExpressionClassification.RValue:
+						// For struct method calls on rvalues, the C# compiler always generates temporaries.
+						return true;
+					case ExpressionClassification.MutableLValue:
+						// For struct method calls on mutable lvalues, the C# compiler never generates temporaries.
+						return false;
+					case ExpressionClassification.ReadonlyLValue:
+						// For struct method calls on readonly lvalues, the C# compiler
+						// only generates a temporary if it isn't a "readonly struct"
+						return MethodRequiresCopyForReadonlyLValue(method);
+					default:
+						throw new InvalidOperationException("invalid expression classification");
+				}
+			} else if (IsUsedAsThisPointerInFieldRead(loadInst)) {
+				// mcs generated temporaries for field reads on rvalues (#1555)
+				return ClassifyExpression(inlinedExpression) == ExpressionClassification.RValue;
+			} else {
 				return false;
-			switch (ClassifyExpression(inlinedExpression)) {
-				case ExpressionClassification.RValue:
-					// For struct method calls on rvalues, the C# compiler always generates temporaries.
-					return true;
-				case ExpressionClassification.MutableLValue:
-					// For struct method calls on mutable lvalues, the C# compiler never generates temporaries.
-					return false;
-				case ExpressionClassification.ReadonlyLValue:
-					// For struct method calls on readonly lvalues, the C# compiler
-					// only generates a temporary if it isn't a "readonly struct"
-					return MethodRequiresCopyForReadonlyLValue(method);
-				default:
-					throw new InvalidOperationException("invalid expression classification");
 			}
 		}
 
@@ -287,14 +294,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		static bool IsUsedAsThisPointerInCall(LdLoca ldloca, out IMethod method)
 		{
 			method = null;
-			if (ldloca.ChildIndex != 0)
-				return false;
 			if (ldloca.Variable.Type.IsReferenceType ?? false)
 				return false;
 			ILInstruction inst = ldloca;
 			while (inst.Parent is LdFlda ldflda) {
 				inst = ldflda;
 			}
+			if (inst.ChildIndex != 0)
+				return false;
 			switch (inst.Parent.OpCode) {
 				case OpCode.Call:
 				case OpCode.CallVirt:
@@ -320,7 +327,18 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					return false;
 			}
 		}
-		
+
+		static bool IsUsedAsThisPointerInFieldRead(LdLoca ldloca)
+		{
+			if (ldloca.Variable.Type.IsReferenceType ?? false)
+				return false;
+			ILInstruction inst = ldloca;
+			while (inst.Parent is LdFlda ldflda) {
+				inst = ldflda;
+			}
+			return inst != ldloca && inst.Parent is LdObj;
+		}
+
 		internal enum ExpressionClassification
 		{
 			RValue,
@@ -417,6 +435,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				case OpCode.NumericCompoundAssign:
 				case OpCode.UserDefinedCompoundAssign:
 				case OpCode.Await:
+				case OpCode.SwitchInstruction:
 					return true;
 				case OpCode.LdLoc:
 					if (v.StateMachineField == null && ((LdLoc)inlinedExpression).Variable.StateMachineField != null) {
@@ -469,33 +488,32 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (parent.SlotInfo == CompoundAssignmentInstruction.TargetSlot) {
 						return true;
 					}
+					if (((CallInstruction)parent).Method is SyntheticRangeIndexAccessor) {
+						return true;
+					}
 					break;
+				case OpCode.LdElema:
+					if (((LdElema)parent).WithSystemIndex) {
+						return true;
+					}
+					break;
+				case OpCode.Leave:
+				case OpCode.YieldReturn:
+					return true;
+				case OpCode.SwitchInstruction:
+				//case OpCode.BinaryNumericInstruction when parent.SlotInfo == SwitchInstruction.ValueSlot:
+				case OpCode.StringToInt when parent.SlotInfo == SwitchInstruction.ValueSlot:
+					return true;
+				case OpCode.MatchInstruction when ((MatchInstruction)parent).IsDeconstructTuple:
+					return true;
 			}
 			// decide based on the top-level target instruction into which we are inlining:
 			switch (next.OpCode) {
-				case OpCode.Leave:
-				case OpCode.YieldReturn:
-					return parent == next;
 				case OpCode.IfInstruction:
 					while (parent.MatchLogicNot(out _)) {
 						parent = parent.Parent;
 					}
 					return parent == next;
-				case OpCode.BlockContainer:
-					if (((BlockContainer)next).EntryPoint.Instructions[0] is SwitchInstruction switchInst) {
-						next = switchInst;
-						goto case OpCode.SwitchInstruction;
-					} else {
-						return false;
-					}
-				case OpCode.SwitchInstruction:
-					if (parent == next)
-						return true;
-					if (parent.MatchBinaryNumericInstruction(BinaryNumericOperator.Sub) && parent.Parent == next)
-						return true;
-					if (parent is StringToInt stringToInt && stringToInt.Parent == next)
-						return true;
-					return false;
 				default:
 					return false;
 			}
@@ -528,8 +546,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			/// Found a load in call, but re-ordering not possible with regards to the
 			/// other call arguments.
 			/// Inlining is not possible, but we might convert the call to named arguments.
+			/// Only used with <see cref="InliningOptions.IntroduceNamedArguments"/>.
 			/// </summary>
 			NamedArgument,
+			/// <summary>
+			/// Found a deconstruction.
+			/// Only used with <see cref="InliningOptions.FindDeconstruction"/>.
+			/// </summary>
+			Deconstruction,
 		}
 
 		internal readonly struct FindResult
@@ -560,6 +584,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				Debug.Assert(callArg.Parent is CallInstruction);
 				return new FindResult(FindResultType.NamedArgument, loadInst, callArg);
 			}
+
+			public static FindResult Deconstruction(DeconstructInstruction deconstruction)
+			{
+				return new FindResult(FindResultType.Deconstruction, deconstruction, null);
+			}
 		}
 
 		/// <summary>
@@ -572,10 +601,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return FindResult.Stop;
 			if (expr.MatchLdLoc(v) || expr.MatchLdLoca(v)) {
 				// Match found, we can inline
+				if (expr.SlotInfo == StObj.TargetSlot && !((StObj)expr.Parent).CanInlineIntoTargetSlot(expressionBeingMoved)) {
+					// special case: the StObj.TargetSlot does not accept some kinds of expressions
+					return FindResult.Stop;
+				}
 				return FindResult.Found(expr);
 			} else if (expr is Block block) {
 				// Inlining into inline-blocks?
 				switch (block.Kind) {
+					case BlockKind.ControlFlow when block.Parent is BlockContainer:
 					case BlockKind.ArrayInitializer:
 					case BlockKind.CollectionInitializer:
 					case BlockKind.ObjectInitializer:
@@ -591,19 +625,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					default:
 						return FindResult.Stop;
 				}
-			} else if (expr is BlockContainer container && container.EntryPoint.IncomingEdgeCount == 1) {
-				// Possibly a switch-container, allow inlining into the switch instruction:
-				return NoContinue(FindLoadInNext(container.EntryPoint.Instructions[0], v, expressionBeingMoved, options));
-				// If FindLoadInNext() returns null, we still can't continue searching
-				// because we can't inline over the remainder of the blockcontainer.
-			} else if (expr is NullableRewrap) {
-				// Inlining into nullable.rewrap is OK unless the expression being inlined
-				// contains a nullable.wrap that isn't being re-wrapped within the expression being inlined.
-				if (expressionBeingMoved.HasFlag(InstructionFlags.MayUnwrapNull))
-					return FindResult.Stop;
+			} else if (options.HasFlag(InliningOptions.FindDeconstruction) && expr is DeconstructInstruction di) {
+				return FindResult.Deconstruction(di);
 			}
 			foreach (var child in expr.Children) {
-				if (!child.SlotInfo.CanInlineInto)
+				if (!expr.CanInlineIntoSlot(child.ChildIndex, expressionBeingMoved))
 					return FindResult.Stop;
 				
 				// Recursively try to find the load instruction
@@ -653,23 +679,33 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		}
 
 		/// <summary>
-		/// Gets whether arg can be un-inlined out of stmt.
+		/// Gets whether 'expressionBeingMoved' can be moved from somewhere before 'stmt' to become the replacement of 'targetLoad'.
 		/// </summary>
-		internal static bool CanUninline(ILInstruction arg, ILInstruction stmt)
+		public static bool CanMoveInto(ILInstruction expressionBeingMoved, ILInstruction stmt, ILInstruction targetLoad)
 		{
-			Debug.Assert(arg.IsDescendantOf(stmt));
-			for (ILInstruction inst = arg; inst != stmt; inst = inst.Parent) {
-				if (!inst.SlotInfo.CanInlineInto)
+			Debug.Assert(targetLoad.IsDescendantOf(stmt));
+			for (ILInstruction inst = targetLoad; inst != stmt; inst = inst.Parent) {
+				if (!inst.Parent.CanInlineIntoSlot(inst.ChildIndex, expressionBeingMoved))
 					return false;
 				// Check whether re-ordering with predecessors is valid:
 				int childIndex = inst.ChildIndex;
 				for (int i = 0; i < childIndex; ++i) {
 					ILInstruction predecessor = inst.Parent.Children[i];
-					if (!SemanticHelper.MayReorder(arg, predecessor))
+					if (!IsSafeForInlineOver(predecessor, expressionBeingMoved))
 						return false;
 				}
 			}
 			return true;
+		}
+
+		/// <summary>
+		/// Gets whether arg can be un-inlined out of stmt.
+		/// </summary>
+		/// <seealso cref="ILInstruction.Extract"/>
+		internal static bool CanUninline(ILInstruction arg, ILInstruction stmt)
+		{
+			// moving into and moving out-of are equivalent
+			return CanMoveInto(arg, stmt, arg);
 		}
 	}
 }

@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using ICSharpCode.Decompiler.CSharp.Resolver;
 using ICSharpCode.Decompiler.CSharp.TypeSystem;
 using ICSharpCode.Decompiler.Semantics;
@@ -205,6 +206,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		/// The default value is <see langword="false" />.
 		/// </summary>
 		public bool PrintIntegralValuesAsHex { get; set; }
+
+		/// <summary>
+		/// Controls whether C# 9 "init;" accessors are supported.
+		/// If disabled, emits "set /*init*/;" instead.
+		/// </summary>
+		public bool SupportInitAccessors { get; set; }
 		#endregion
 
 		#region Convert Type
@@ -303,7 +310,16 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 						astType = ConvertTypeHelper(pt.GenericType, pt.TypeArguments);
 						break;
 					default:
-						astType = MakeSimpleType(type.Name);
+						switch (type.Kind) {
+							case TypeKind.Dynamic:
+							case TypeKind.NInt:
+							case TypeKind.NUInt:
+								astType = new PrimitiveType(type.Name);
+								break;
+							default:
+								astType = MakeSimpleType(type.Name);
+								break;
+						}
 						break;
 				}
 				if (type.Nullability == Nullability.Nullable) {
@@ -713,7 +729,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				return ace;
 			} else if (rr.IsCompileTimeConstant) {
 				var expr = ConvertConstantValue(rr.Type, rr.ConstantValue);
-				if (isBoxing && rr.Type.IsCSharpSmallIntegerType()) {
+				if (isBoxing && (rr.Type.IsCSharpSmallIntegerType() || rr.Type.IsCSharpNativeIntegerType())) {
 					// C# does not have small integer literal types.
 					// We need to add a cast so that the integer literal gets boxed as the correct type.
 					expr = new CastExpression(ConvertType(rr.Type), expr);
@@ -776,32 +792,38 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				}
 				expr.Initializer = new ArrayInitializerExpression(arr.Select(e => ConvertConstantValue(elementType, e.Type, e.Value)));
 				return expr;
-			} else if (type.Kind == TypeKind.Enum) {
-				return ConvertEnumValue(type, (long)CSharpPrimitiveCast.Cast(TypeCode.Int64, constantValue, false));
 			} else {
-				if (IsSpecialConstant(type, constantValue, out var expr))
+				IType underlyingType = NullableType.GetUnderlyingType(type);
+				if (underlyingType.Kind == TypeKind.Enum) {
+					return ConvertEnumValue(underlyingType, (long)CSharpPrimitiveCast.Cast(TypeCode.Int64, constantValue, false));
+				} else {
+					if (IsSpecialConstant(underlyingType, constantValue, out var expr))
+						return expr;
+					if (underlyingType.IsKnownType(KnownTypeCode.Double) || underlyingType.IsKnownType(KnownTypeCode.Single))
+						return ConvertFloatingPointLiteral(underlyingType, constantValue);
+					IType literalType = underlyingType;
+					bool integerTypeMismatch = underlyingType.IsCSharpSmallIntegerType() || underlyingType.IsCSharpNativeIntegerType();
+					if (integerTypeMismatch) {
+						// C# does not have integer literals of small integer types,
+						// use `int` literal instead.
+						// It also doesn't have native integer literals, those also use `int` (or `uint` for `nuint`).
+						bool unsigned = underlyingType.Kind == TypeKind.NUInt;
+						constantValue = CSharpPrimitiveCast.Cast(unsigned ? TypeCode.UInt32 : TypeCode.Int32, constantValue, false);
+						var compilation = resolver?.Compilation ?? expectedType.GetDefinition()?.Compilation;
+						literalType = compilation?.FindType(unsigned ? KnownTypeCode.UInt32 : KnownTypeCode.Int32);
+					}
+					LiteralFormat format = LiteralFormat.None;
+					if (PrintIntegralValuesAsHex) {
+						format = LiteralFormat.HexadecimalNumber;
+					}
+					expr = new PrimitiveExpression(constantValue, format);
+					if (AddResolveResultAnnotations && literalType != null)
+						expr.AddAnnotation(new ConstantResolveResult(literalType, constantValue));
+					if (integerTypeMismatch && !type.Equals(expectedType)) {
+						expr = new CastExpression(ConvertType(type), expr);
+					}
 					return expr;
-				if (type.IsKnownType(KnownTypeCode.Double) || type.IsKnownType(KnownTypeCode.Single))
-					return ConvertFloatingPointLiteral(type, constantValue);
-				IType literalType = type;
-				bool smallInteger = type.IsCSharpSmallIntegerType();
-				if (smallInteger) { 
-					// C# does not have integer literals of small integer types,
-					// use `int` literal instead.
-					constantValue = CSharpPrimitiveCast.Cast(TypeCode.Int32, constantValue, false);
-					literalType = type.GetDefinition().Compilation.FindType(KnownTypeCode.Int32);
 				}
-				LiteralFormat format = LiteralFormat.None;
-				if (PrintIntegralValuesAsHex) {
-					format = LiteralFormat.HexadecimalNumber;
-				}
-				expr = new PrimitiveExpression(constantValue, format);
-				if (AddResolveResultAnnotations)
-					expr.AddAnnotation(new ConstantResolveResult(literalType, constantValue));
-				if (smallInteger && !type.Equals(expectedType)) {
-					expr = new CastExpression(ConvertType(type), expr);
-				}
-				return expr;
 			}
 		}
 
@@ -813,7 +835,9 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			// find IType of constant in compilation.
 			var constantType = expectedType;
 			if (!expectedType.IsKnownType(info.Type)) {
-				var compilation = expectedType.GetDefinition().Compilation;
+				var compilation = resolver?.Compilation ?? expectedType.GetDefinition()?.Compilation;
+				if (compilation == null)
+					return false;
 				constantType = compilation.FindType(info.Type);
 			}
 			// if the field definition cannot be found, do not generate a reference to the field.
@@ -1349,7 +1373,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					return ConvertDestructor((IMethod)entity);
 				case SymbolKind.Accessor:
 					IMethod accessor = (IMethod)entity;
-					return ConvertAccessor(accessor, accessor.AccessorOwner != null ? accessor.AccessorOwner.Accessibility : Accessibility.None, false);
+					Accessibility ownerAccessibility = accessor.AccessorOwner?.Accessibility ?? Accessibility.None;
+					return ConvertAccessor(accessor, accessor.AccessorKind, ownerAccessibility, false);
 				default:
 					throw new ArgumentException("Invalid value for SymbolKind: " + entity.SymbolKind);
 			}
@@ -1540,15 +1565,11 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			}
 		}
 		
-		Accessor ConvertAccessor(IMethod accessor, Accessibility ownerAccessibility, bool addParameterAttribute)
+		Accessor ConvertAccessor(IMethod accessor, MethodSemanticsAttributes kind, Accessibility ownerAccessibility, bool addParameterAttribute)
 		{
 			if (accessor == null)
 				return Accessor.Null;
 			Accessor decl = new Accessor();
-			if (this.ShowAccessibility && accessor.Accessibility != ownerAccessibility)
-				decl.Modifiers = ModifierFromAccessibility(accessor.Accessibility);
-			if (accessor.HasReadonlyModifier())
-				decl.Modifiers |= Modifiers.Readonly;
 			if (ShowAttributes) {
 				decl.Attributes.AddRange(ConvertAttributes(accessor.GetAttributes()));
 				decl.Attributes.AddRange(ConvertAttributes(accessor.GetReturnTypeAttributes(), "return"));
@@ -1556,10 +1577,35 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					decl.Attributes.AddRange(ConvertAttributes(accessor.Parameters.Last().GetAttributes(), "param"));
 				}
 			}
+			if (this.ShowAccessibility && accessor.Accessibility != ownerAccessibility)
+				decl.Modifiers = ModifierFromAccessibility(accessor.Accessibility);
+			if (accessor.HasReadonlyModifier())
+				decl.Modifiers |= Modifiers.Readonly;
+			TokenRole keywordRole = kind switch
+			{
+				MethodSemanticsAttributes.Getter => PropertyDeclaration.GetKeywordRole,
+				MethodSemanticsAttributes.Setter => PropertyDeclaration.SetKeywordRole,
+				MethodSemanticsAttributes.Adder => CustomEventDeclaration.AddKeywordRole,
+				MethodSemanticsAttributes.Remover => CustomEventDeclaration.RemoveKeywordRole,
+				_ => null
+			};
+			if (kind == MethodSemanticsAttributes.Setter && SupportInitAccessors && accessor.IsInitOnly) {
+				keywordRole = PropertyDeclaration.InitKeywordRole;
+			}
+			if (keywordRole != null) {
+				decl.AddChild(new CSharpTokenNode(TextLocation.Empty, keywordRole), keywordRole);
+			}
+			if (accessor.IsInitOnly && keywordRole != PropertyDeclaration.InitKeywordRole) {
+				decl.AddChild(new Comment("init", CommentType.MultiLine), Roles.Comment);
+			}
 			if (AddResolveResultAnnotations) {
 				decl.AddAnnotation(new MemberResolveResult(null, accessor));
 			}
-			decl.Body = GenerateBodyBlock();
+			if (GenerateBody) {
+				decl.Body = GenerateBodyBlock();
+			} else {
+				decl.AddChild(new CSharpTokenNode(TextLocation.Empty, Roles.Semicolon), Roles.Semicolon);
+			}
 			return decl;
 		}
 		
@@ -1578,8 +1624,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				ct.HasReadOnlySpecifier = true;
 			}
 			decl.Name = property.Name;
-			decl.Getter = ConvertAccessor(property.Getter, property.Accessibility, false);
-			decl.Setter = ConvertAccessor(property.Setter, property.Accessibility, true);
+			decl.Getter = ConvertAccessor(property.Getter, MethodSemanticsAttributes.Getter, property.Accessibility, false);
+			decl.Setter = ConvertAccessor(property.Setter, MethodSemanticsAttributes.Setter, property.Accessibility, true);
 			decl.PrivateImplementationType = GetExplicitInterfaceType (property);
 			MergeReadOnlyModifiers(decl, decl.Getter, decl.Setter);
 			return decl;
@@ -1610,8 +1656,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			foreach (IParameter p in indexer.Parameters) {
 				decl.Parameters.Add(ConvertParameter(p));
 			}
-			decl.Getter = ConvertAccessor(indexer.Getter, indexer.Accessibility, false);
-			decl.Setter = ConvertAccessor(indexer.Setter, indexer.Accessibility, true);
+			decl.Getter = ConvertAccessor(indexer.Getter, MethodSemanticsAttributes.Getter, indexer.Accessibility, false);
+			decl.Setter = ConvertAccessor(indexer.Setter, MethodSemanticsAttributes.Setter, indexer.Accessibility, true);
 			decl.PrivateImplementationType = GetExplicitInterfaceType (indexer);
 			MergeReadOnlyModifiers(decl, decl.Getter, decl.Setter);
 			return decl;
@@ -1630,8 +1676,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				}
 				decl.ReturnType = ConvertType(ev.ReturnType);
 				decl.Name = ev.Name;
-				decl.AddAccessor    = ConvertAccessor(ev.AddAccessor, ev.Accessibility, true);
-				decl.RemoveAccessor = ConvertAccessor(ev.RemoveAccessor, ev.Accessibility, true);
+				decl.AddAccessor    = ConvertAccessor(ev.AddAccessor, MethodSemanticsAttributes.Adder, ev.Accessibility, true);
+				decl.RemoveAccessor = ConvertAccessor(ev.RemoveAccessor, MethodSemanticsAttributes.Remover, ev.Accessibility, true);
 				decl.PrivateImplementationType = GetExplicitInterfaceType (ev);
 				MergeReadOnlyModifiers(decl, decl.AddAccessor, decl.RemoveAccessor);
 				return decl;
@@ -1785,6 +1831,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					return !member.IsStatic;
 				case SymbolKind.Destructor:
 					return false;
+				case SymbolKind.Method:
+					return !((IMethod)member).IsLocalFunction;
 				default:
 					return true;
 			}
@@ -1797,7 +1845,11 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				m |= ModifierFromAccessibility (member.Accessibility);
 			}
 			if (this.ShowModifiers) {
-				if (member.IsStatic) {
+				if (member is LocalFunctionMethod localFunction) {
+					if (localFunction.IsStaticLocalFunction) {
+						m |= Modifiers.Static;
+					}
+				} else if (member.IsStatic) {
 					m |= Modifiers.Static;
 				} else {
 					var declaringType = member.DeclaringType;

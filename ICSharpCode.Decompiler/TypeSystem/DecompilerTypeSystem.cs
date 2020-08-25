@@ -110,10 +110,15 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// </summary>
 		ReadOnlyMethods = 0x800,
 		/// <summary>
+		/// [NativeIntegerAttribute] is used to replace 'IntPtr' types with the 'nint' type.
+		/// </summary>
+		NativeIntegers = 0x1000,
+		/// <summary>
 		/// Default settings: typical options for the decompiler, with all C# languages features enabled.
 		/// </summary>
 		Default = Dynamic | Tuple | ExtensionMethods | DecimalConstants | ReadOnlyStructsAndParameters
 			| RefStructs | UnmanagedConstraints | NullabilityAnnotations | ReadOnlyMethods
+			| NativeIntegers
 	}
 
 	/// <summary>
@@ -145,6 +150,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				typeSystemOptions |= TypeSystemOptions.NullabilityAnnotations;
 			if (settings.ReadOnlyMethods)
 				typeSystemOptions |= TypeSystemOptions.ReadOnlyMethods;
+			if (settings.NativeIntegers)
+				typeSystemOptions |= TypeSystemOptions.NativeIntegers;
 			return typeSystemOptions;
 		}
 
@@ -217,24 +224,26 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			var mainModuleWithOptions = mainModule.WithOptions(typeSystemOptions);
 			var referencedAssembliesWithOptions = referencedAssemblies.Select(file => file.WithOptions(typeSystemOptions));
 			// Primitive types are necessary to avoid assertions in ILReader.
-			// Fallback to MinimalCorlib to provide the primitive types.
-			if (!HasType(KnownTypeCode.Void) || !HasType(KnownTypeCode.Int32)) {
-				Init(mainModule.WithOptions(typeSystemOptions), referencedAssembliesWithOptions.Concat(new[] { MinimalCorlib.Instance }));
+			// Other known types are necessary in order for transforms to work (e.g. Task<T> for async transform).
+			// Figure out which known types are missing from our type system so far:
+			var missingKnownTypes = KnownTypeReference.AllKnownTypes.Where(IsMissing).ToList();
+			if (missingKnownTypes.Count > 0) {
+				Init(mainModule.WithOptions(typeSystemOptions), referencedAssembliesWithOptions.Concat(new[] { MinimalCorlib.CreateWithTypes(missingKnownTypes) }));
 			} else {
 				Init(mainModuleWithOptions, referencedAssembliesWithOptions);
 			}
 			this.MainModule = (MetadataModule)base.MainModule;
 
-			bool HasType(KnownTypeCode code)
+			bool IsMissing(KnownTypeReference knownType)
 			{
-				TopLevelTypeName name = KnownTypeReference.Get(code).TypeName;
+				var name = knownType.TypeName;
 				if (!mainModule.GetTypeDefinition(name).IsNil)
-					return true;
+					return false;
 				foreach (var file in referencedAssemblies) {
 					if (!file.GetTypeDefinition(name).IsNil)
-						return true;
+						return false;
 				}
-				return false;
+				return true;
 			}
 		}
 		

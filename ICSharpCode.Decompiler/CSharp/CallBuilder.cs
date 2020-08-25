@@ -197,9 +197,9 @@ namespace ICSharpCode.Decompiler.CSharp
 			} else if (localFunction != null) {
 				var ide = new IdentifierExpression(localFunction.Name);
 				if (method.TypeArguments.Count > 0) {
-					int skipCount = localFunction.ReducedMethod.NumberOfCompilerGeneratedTypeParameters;
-					ide.TypeArguments.AddRange(method.TypeArguments.Skip(skipCount).Select(expressionBuilder.ConvertType));
+					ide.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
 				}
+				ide.AddAnnotation(localFunction);
 				target = ide.WithoutILInstruction()
 					.WithRR(ToMethodGroup(method, localFunction));
 			} else {
@@ -250,6 +250,12 @@ namespace ICSharpCode.Decompiler.CSharp
 					.Concat(new[] { argListArg.WithoutILInstruction().WithRR(argListRR) }).ToArray();
 				method = ((VarArgInstanceMethod)method).BaseMethod;
 				argumentList.ExpectedParameters = method.Parameters.ToArray();
+			}
+
+			if (settings.Ranges) {
+				if (HandleRangeConstruction(out var result, callOpCode, method, target, argumentList)) {
+					return result;
+				}
 			}
 
 			if (callOpCode == OpCode.NewObj) {
@@ -771,7 +777,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			bool requireTarget;
 			ResolveResult targetResolveResult;
 			if ((allowedTransforms & CallTransformation.RequireTarget) != 0) {
-				if (expressionBuilder.HidesVariableWithName(method.Name)) {
+				if (settings.AlwaysQualifyMemberReferences || expressionBuilder.HidesVariableWithName(method.Name)) {
 					requireTarget = true;
 				} else {
 					if (method.IsLocalFunction)
@@ -805,7 +811,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				// that are no longer required once we add the type arguments.
 				// We lend overload resolution a hand by detecting such cases beforehand and requiring type arguments,
 				// if necessary.
-				if (!CanInferTypeArgumentsFromParameters(method, argumentList.Arguments.SelectArray(a => a.ResolveResult), expressionBuilder.typeInference)) {
+				if (!CanInferTypeArgumentsFromArguments(method, argumentList, expressionBuilder.typeInference)) {
 					requireTypeArguments = true;
 					typeArguments = method.TypeArguments.ToArray();
 					appliedRequireTypeArgumentsShortcut = true;
@@ -889,14 +895,14 @@ namespace ICSharpCode.Decompiler.CSharp
 			return method.IsExtensionMethod && arguments.Count > 0 && arguments[0].Expression is NullReferenceExpression;
 		}
 
-		public static bool CanInferTypeArgumentsFromParameters(IMethod method, IReadOnlyList<ResolveResult> arguments,
-			TypeInference typeInference)
+		static bool CanInferTypeArgumentsFromArguments(IMethod method, ArgumentList argumentList, TypeInference typeInference)
 		{
 			if (method.TypeParameters.Count == 0)
 				return true;
 			// always use unspecialized member, otherwise type inference fails
 			method = (IMethod)method.MemberDefinition;
-			typeInference.InferTypeArguments(method.TypeParameters, arguments, method.Parameters.SelectReadOnlyArray(p => p.Type),
+			var parametersInArgumentOrder = argumentList.ArgumentToParameterMap == null ? method.Parameters : argumentList.ArgumentToParameterMap.SelectReadOnlyArray(index => method.Parameters[index]);
+			typeInference.InferTypeArguments(method.TypeParameters, argumentList.Arguments.SelectReadOnlyArray(a => a.ResolveResult), parametersInArgumentOrder.SelectReadOnlyArray(p => p.Type),
 				out bool success);
 			return success;
 		}
@@ -1093,7 +1099,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			TranslatedExpression target, List<TranslatedExpression> arguments, string[] argumentNames)
 		{
 			bool requireTarget;
-			if (method.AccessorOwner.SymbolKind == SymbolKind.Indexer || expressionBuilder.HidesVariableWithName(method.AccessorOwner.Name))
+			if (settings.AlwaysQualifyMemberReferences || method.AccessorOwner.SymbolKind == SymbolKind.Indexer || expressionBuilder.HidesVariableWithName(method.AccessorOwner.Name))
 				requireTarget = true;
 			else if (method.IsStatic)
 				requireTarget = !expressionBuilder.IsCurrentOrContainingType(method.DeclaringTypeDefinition);
@@ -1320,7 +1326,6 @@ namespace ICSharpCode.Decompiler.CSharp
 				target = default;
 				targetType = default;
 				methodName = localFunction.Name;
-				// TODO : think about how to handle generic local functions
 			} else if (method.IsExtensionMethod && invokeMethod != null && method.Parameters.Count - 1 == invokeMethod.Parameters.Count) {
 				step = 5;
 				targetType = method.Parameters[0].Type;
@@ -1399,11 +1404,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			} else {
 				var ide = new IdentifierExpression(methodName);
 				if ((step & 2) != 0) {
-					int skipCount = 0;
-					if (localFunction != null && method.TypeArguments.Count > 0) {
-						skipCount = localFunction.ReducedMethod.NumberOfCompilerGeneratedTypeParameters;
-					}
-					ide.TypeArguments.AddRange(method.TypeArguments.Skip(skipCount).Select(expressionBuilder.ConvertType));
+					ide.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
 				}
 				targetExpression = ide.WithRR(result);
 			}
@@ -1462,7 +1463,7 @@ namespace ICSharpCode.Decompiler.CSharp
 						method.DeclaringType,
 						new IParameterizedMember[] { method }
 					)
-				}, method.TypeArguments.Skip(localFunction.ReducedMethod.NumberOfCompilerGeneratedTypeParameters).ToArray()
+				}, method.TypeArguments
 			);
 		}
 
@@ -1493,6 +1494,48 @@ namespace ICSharpCode.Decompiler.CSharp
 			Debug.Assert(pos == arguments.Length);
 			return Build(call.OpCode, call.Method, arguments, argumentToParameterMap, call.ConstrainedTo)
 				.WithILInstruction(call).WithILInstruction(block);
+		}
+
+		private bool HandleRangeConstruction(out ExpressionWithResolveResult result, OpCode callOpCode, IMethod method, TranslatedExpression target, ArgumentList argumentList)
+		{
+			result = default;
+			if (argumentList.ArgumentNames != null) {
+				return false; // range syntax doesn't support named arguments
+			}
+			if (method.DeclaringType.IsKnownType(KnownTypeCode.Range)) {
+				if (callOpCode == OpCode.NewObj && argumentList.Length == 2) {
+					result = new BinaryOperatorExpression(argumentList.Arguments[0], BinaryOperatorType.Range, argumentList.Arguments[1])
+						.WithRR(new MemberResolveResult(null, method));
+					return true;
+				} else if (callOpCode == OpCode.Call && method.Name == "get_All" && argumentList.Length == 0) {
+					result = new BinaryOperatorExpression(Expression.Null, BinaryOperatorType.Range, Expression.Null)
+						.WithRR(new MemberResolveResult(null, method.AccessorOwner ?? method));
+					return true;
+				} else if (callOpCode == OpCode.Call && method.Name == "StartAt" && argumentList.Length == 1) {
+					result = new BinaryOperatorExpression(argumentList.Arguments[0], BinaryOperatorType.Range, Expression.Null)
+						.WithRR(new MemberResolveResult(null, method));
+					return true;
+				} else if (callOpCode == OpCode.Call && method.Name == "EndAt" && argumentList.Length == 1) {
+					result = new BinaryOperatorExpression(Expression.Null, BinaryOperatorType.Range, argumentList.Arguments[0])
+						.WithRR(new MemberResolveResult(null, method));
+					return true;
+				}
+			} else if (callOpCode == OpCode.NewObj && method.DeclaringType.IsKnownType(KnownTypeCode.Index)) {
+				if (argumentList.Length != 2)
+					return false;
+				if (!(argumentList.Arguments[1].Expression is PrimitiveExpression pe && pe.Value is true))
+					return false;
+				result = new UnaryOperatorExpression(UnaryOperatorType.IndexFromEnd, argumentList.Arguments[0])
+					.WithRR(new MemberResolveResult(null, method));
+				return true;
+			} else if (method is SyntheticRangeIndexAccessor rangeIndexAccessor && rangeIndexAccessor.IsSlicing) {
+				// For slicing the method is called Slice()/Substring(), but we still need to output indexer notation.
+				// So special-case range-based slicing here.
+				result = new IndexerExpression(target, argumentList.Arguments.Select(a => a.Expression))
+					.WithRR(new MemberResolveResult(target.ResolveResult, method));
+				return true;
+			}
+			return false;
 		}
 	}
 }

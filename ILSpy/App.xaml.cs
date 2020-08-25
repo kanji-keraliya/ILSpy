@@ -40,19 +40,12 @@ namespace ICSharpCode.ILSpy
 	/// </summary>
 	public partial class App : Application
 	{
-		
 		internal static CommandLineArguments CommandLineArguments;
-
-		static ExportProvider exportProvider;
-		
-		public static ExportProvider ExportProvider => exportProvider;
-
-		static IExportProviderFactory exportProviderFactory;
-		
-		public static IExportProviderFactory ExportProviderFactory => exportProviderFactory;
-		
 		internal static readonly IList<ExceptionData> StartupExceptions = new List<ExceptionData>();
-		
+
+		public static ExportProvider ExportProvider { get; private set; }
+		public static IExportProviderFactory ExportProviderFactory { get; private set; }
+
 		internal class ExceptionData
 		{
 			public Exception Exception;
@@ -77,7 +70,16 @@ namespace ICSharpCode.ILSpy
 				Dispatcher.CurrentDispatcher.UnhandledException += Dispatcher_UnhandledException;
 			}
 			TaskScheduler.UnobservedTaskException += DotNet40_UnobservedTaskException;
+			InitializeMef().GetAwaiter().GetResult();
+			Languages.Initialize(ExportProvider);
+			EventManager.RegisterClassHandler(typeof(Window),
+											  Hyperlink.RequestNavigateEvent,
+											  new RequestNavigateEventHandler(Window_RequestNavigate));
+			ILSpyTraceListener.Install();
+		}
 
+		private static async Task InitializeMef()
+		{
 			// Cannot show MessageBox here, because WPF would crash with a XamlParseException
 			// Remember and show exceptions in text output, once MainWindow is properly initialized
 			try {
@@ -93,7 +95,7 @@ namespace ICSharpCode.ILSpy
 						var name = Path.GetFileNameWithoutExtension(plugin);
 						try {
 							var asm = Assembly.Load(name);
-							var parts = discovery.CreatePartsAsync(asm).GetAwaiter().GetResult();
+							var parts = await discovery.CreatePartsAsync(asm);
 							catalog = catalog.AddParts(parts);
 						} catch (Exception ex) {
 							StartupExceptions.Add(new ExceptionData { Exception = ex, PluginName = name });
@@ -101,28 +103,22 @@ namespace ICSharpCode.ILSpy
 					}
 				}
 				// Add the built-in parts
-				catalog = catalog.AddParts(discovery.CreatePartsAsync(Assembly.GetExecutingAssembly()).GetAwaiter().GetResult());
+				var createdParts = await discovery.CreatePartsAsync(Assembly.GetExecutingAssembly());
+				catalog = catalog.AddParts(createdParts);
 				// If/When the project switches to .NET Standard/Core, this will be needed to allow metadata interfaces (as opposed
 				// to metadata classes). When running on .NET Framework, it's automatic.
 				//   catalog.WithDesktopSupport();
 				// If/When any part needs to import ICompositionService, this will be needed:
 				//   catalog.WithCompositionService();
 				var config = CompositionConfiguration.Create(catalog);
-				exportProviderFactory = config.CreateExportProviderFactory();
-				exportProvider = exportProviderFactory.CreateExportProvider();
+				ExportProviderFactory = config.CreateExportProviderFactory();
+				ExportProvider = ExportProviderFactory.CreateExportProvider();
 				// This throws exceptions for composition failures. Alternatively, the configuration's CompositionErrors property
 				// could be used to log the errors directly. Used at the end so that it does not prevent the export provider setup.
 				config.ThrowOnErrors();
 			} catch (Exception ex) {
 				StartupExceptions.Add(new ExceptionData { Exception = ex });
 			}
-			
-			Languages.Initialize(exportProvider);
-
-			EventManager.RegisterClassHandler(typeof(Window),
-			                                  Hyperlink.RequestNavigateEvent,
-			                                  new RequestNavigateEventHandler(Window_RequestNavigate));
-			ILSpyTraceListener.Install();
 		}
 
 		protected override void OnStartup(StartupEventArgs e)
@@ -169,6 +165,9 @@ namespace ICSharpCode.ILSpy
 			}
 		}
 
+		[ThreadStatic]
+		static bool showingError;
+
 		static void UnhandledException(Exception exception)
 		{
 			Debug.WriteLine(exception.ToString());
@@ -180,26 +179,44 @@ namespace ICSharpCode.ILSpy
 					break;
 				}
 			}
-			MessageBox.Show(exception.ToString(), "Sorry, we crashed");
+			if (showingError) {
+				// Ignore re-entrant calls
+				// We run the risk of opening an infinite number of exception dialogs.
+				return;
+			}
+			showingError = true;
+			try {
+				MessageBox.Show(exception.ToString(), "Sorry, we crashed");
+			} finally {
+				showingError = false;
+			}
 		}
 		#endregion
 
 		#region Pass Command Line Arguments to previous instance
 		bool SendToPreviousInstance(string message, bool activate)
 		{
+			string ownProcessName;
+			using (var ownProcess = Process.GetCurrentProcess()) {
+				ownProcessName = ownProcess.ProcessName;
+			}
+
 			bool success = false;
 			NativeMethods.EnumWindows(
 				(hWnd, lParam) => {
 					string windowTitle = NativeMethods.GetWindowText(hWnd, 100);
 					if (windowTitle.StartsWith("ILSpy", StringComparison.Ordinal)) {
-						Debug.WriteLine("Found {0:x4}: {1}", hWnd, windowTitle);
-						IntPtr result = Send(hWnd, message);
-						Debug.WriteLine("WM_COPYDATA result: {0:x8}", result);
-						if (result == (IntPtr)1) {
-							if (activate)
-								NativeMethods.SetForegroundWindow(hWnd);
-							success = true;
-							return false; // stop enumeration
+						string processName = NativeMethods.GetProcessNameFromWindow(hWnd);
+						Debug.WriteLine("Found {0:x4}: '{1}' in '{2}'", hWnd, windowTitle, processName);
+						if (string.Equals(processName, ownProcessName, StringComparison.OrdinalIgnoreCase)) {
+							IntPtr result = Send(hWnd, message);
+							Debug.WriteLine("WM_COPYDATA result: {0:x8}", result);
+							if (result == (IntPtr)1) {
+								if (activate)
+									NativeMethods.SetForegroundWindow(hWnd);
+								success = true;
+								return false; // stop enumeration
+							}
 						}
 					}
 					return true; // continue enumeration

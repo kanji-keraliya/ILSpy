@@ -43,6 +43,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				currentList.Add(node);
 				nodes.Push(currentList);
 				currentList = new List<AstNode>();
+			} else if (node is Comment comment) {
+				comment.SetStartLocation(locationProvider.Location);
+			}
+			if (node is ErrorExpression error) {
+				error.Location = locationProvider.Location;
 			}
 			base.StartNode(node);
 		}
@@ -62,6 +67,8 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 					node.AddChildWithExistingRole(child);
 				}
 				currentList = nodes.Pop();
+			} else if (node is Comment comment) {
+				comment.SetEndLocation(locationProvider.Location);
 			}
 			base.EndNode(node);
 		}

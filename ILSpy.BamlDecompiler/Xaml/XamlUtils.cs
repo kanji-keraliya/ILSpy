@@ -41,11 +41,12 @@ namespace ILSpy.BamlDecompiler.Xaml {
 
 		public static string ToString(this XamlContext ctx, XElement elem, XName name) {
 			var sb = new StringBuilder();
-			if (name.Namespace != elem.GetDefaultNamespace() &&
-			    name.Namespace != elem.Name.Namespace &&
-			    !string.IsNullOrEmpty(name.Namespace.NamespaceName)) {
-				sb.Append(elem.GetPrefixOfNamespace(name.Namespace));
-				sb.Append(':');
+			if (name.Namespace != elem.GetDefaultNamespace()) {
+				var prefix = elem.GetPrefixOfNamespace(name.Namespace);
+				if (!string.IsNullOrEmpty(prefix)) {
+					sb.Append(prefix);
+					sb.Append(':');
+				}
 			}
 			sb.Append(name.LocalName);
 			return sb.ToString();
@@ -72,6 +73,28 @@ namespace ILSpy.BamlDecompiler.Xaml {
 			// multiply by the inverse of it (0.000001).
 			// (11700684 * 0.000001) != (11700684 / 1000000.0) => 11.700683999999999 != 11.700684
 			return reader.ReadInt32() / 1000000.0;
+		}
+
+		/// <summary>
+		/// Escape characters that cannot be used in XML.
+		/// </summary>
+		public static StringBuilder EscapeName(StringBuilder sb, string name)
+		{
+			foreach (char ch in name) {
+				if (char.IsWhiteSpace(ch) || char.IsControl(ch) || char.IsSurrogate(ch))
+					sb.AppendFormat("\\u{0:x4}", (int)ch);
+				else
+					sb.Append(ch);
+			}
+			return sb;
+		}
+
+		/// <summary>
+		/// Escape characters that cannot be displayed in the UI.
+		/// </summary>
+		public static string EscapeName(string name)
+		{
+			return EscapeName(new StringBuilder(name.Length), name).ToString();
 		}
 	}
 }

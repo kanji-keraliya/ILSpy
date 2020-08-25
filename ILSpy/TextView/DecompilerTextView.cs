@@ -23,6 +23,7 @@ using System.ComponentModel.Composition;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -44,8 +45,8 @@ using ICSharpCode.AvalonEdit.Highlighting.Xshd;
 using ICSharpCode.AvalonEdit.Rendering;
 using ICSharpCode.AvalonEdit.Search;
 using ICSharpCode.Decompiler;
-using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
+using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.Documentation;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Output;
@@ -115,7 +116,7 @@ namespace ICSharpCode.ILSpy.TextView
 
 			InitializeComponent();
 
-			this.referenceElementGenerator = new ReferenceElementGenerator(this.JumpToReference, this.IsLink);
+			this.referenceElementGenerator = new ReferenceElementGenerator(this.IsLink);
 			textEditor.TextArea.TextView.ElementGenerators.Add(referenceElementGenerator);
 			this.uiElementGenerator = new UIElementGenerator();
 			this.bracketHighlightRenderer = new BracketHighlightRenderer(textEditor.TextArea.TextView);
@@ -362,10 +363,10 @@ namespace ICSharpCode.ILSpy.TextView
 				if (document == null)
 					return null;
 				return new FlowDocumentTooltip(document);
-			} else if (segment.Reference is ValueTuple<PEFile, System.Reflection.Metadata.EntityHandle> unresolvedEntity) {
-				var typeSystem = new DecompilerTypeSystem(unresolvedEntity.Item1, unresolvedEntity.Item1.GetAssemblyResolver(), TypeSystemOptions.Default | TypeSystemOptions.Uncached);
+			} else if (segment.Reference is EntityReference unresolvedEntity) {
+				var typeSystem = new DecompilerTypeSystem(unresolvedEntity.Module, unresolvedEntity.Module.GetAssemblyResolver(), TypeSystemOptions.Default | TypeSystemOptions.Uncached);
 				try {
-					IEntity resolved = typeSystem.MainModule.ResolveEntity(unresolvedEntity.Item2);
+					IEntity resolved = typeSystem.MainModule.ResolveEntity((EntityHandle)unresolvedEntity.Handle);
 					if (resolved == null)
 						return null;
 					var document = CreateTooltipForEntity(resolved);
@@ -819,7 +820,7 @@ namespace ICSharpCode.ILSpy.TextView
 		/// <summary>
 		/// Jumps to the definition referred to by the <see cref="ReferenceSegment"/>.
 		/// </summary>
-		internal void JumpToReference(ReferenceSegment referenceSegment)
+		internal void JumpToReference(ReferenceSegment referenceSegment, bool openInNewTab)
 		{
 			object reference = referenceSegment.Reference;
 			if (referenceSegment.IsLocal) {
@@ -848,7 +849,7 @@ namespace ICSharpCode.ILSpy.TextView
 					return;
 				}
 			}
-			MainWindow.Instance.JumpToReference(reference);
+			MainWindow.Instance.JumpToReference(reference, openInNewTab);
 		}
 
 		Point? mouseDownPos;
@@ -865,7 +866,7 @@ namespace ICSharpCode.ILSpy.TextView
 			Vector dragDistance = e.GetPosition(this) - mouseDownPos.Value;
 			if (Math.Abs(dragDistance.X) < SystemParameters.MinimumHorizontalDragDistance
 				&& Math.Abs(dragDistance.Y) < SystemParameters.MinimumVerticalDragDistance
-				&& e.ChangedButton == MouseButton.Left)
+				&& (e.ChangedButton == MouseButton.Left || e.ChangedButton == MouseButton.Middle))
 			{
 				// click without moving mouse
 				var referenceSegment = GetReferenceSegmentAtMousePosition();
@@ -877,7 +878,7 @@ namespace ICSharpCode.ILSpy.TextView
 					// cursor position and the mouse position.
 					textEditor.TextArea.MouseSelectionMode = MouseSelectionMode.None;
 
-					JumpToReference(referenceSegment);
+					JumpToReference(referenceSegment, e.ChangedButton == MouseButton.Middle || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
 				}
 			}
 		}
@@ -951,6 +952,7 @@ namespace ICSharpCode.ILSpy.TextView
 			Thread thread = new Thread(new ThreadStart(
 				delegate {
 					try {
+						context.Options.EscapeInvalidIdentifiers = true;
 						Stopwatch stopwatch = new Stopwatch();
 						stopwatch.Start();
 						using (StreamWriter w = new StreamWriter(fileName)) {
@@ -963,8 +965,20 @@ namespace ICSharpCode.ILSpy.TextView
 							}
 						}
 						stopwatch.Stop();
-						AvalonEditTextOutput output = new AvalonEditTextOutput();
-						output.WriteLine("Decompilation complete in " + stopwatch.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
+						AvalonEditTextOutput output = new AvalonEditTextOutput {
+							EnableHyperlinks = true,
+							Title = string.Join(", ", context.TreeNodes.Select(n => n.Text))
+						};
+
+						output.WriteLine(Properties.Resources.DecompilationCompleteInF1Seconds, stopwatch.Elapsed.TotalSeconds);
+						if (context.Options.SaveAsProjectDirectory != null) {
+							output.WriteLine();
+							if (context.Options.DecompilerSettings.UseSdkStyleProjectFormat)
+								output.WriteLine(Properties.Resources.ProjectExportFormatSDKHint);
+							else
+								output.WriteLine(Properties.Resources.ProjectExportFormatNonSDKHint);
+							output.WriteLine(Properties.Resources.ProjectExportFormatChangeSettingHint);
+						}
 						output.WriteLine();
 						output.AddButton(null, Properties.Resources.OpenExplorer, delegate { Process.Start("explorer", "/select,\"" + fileName + "\""); });
 						output.WriteLine();

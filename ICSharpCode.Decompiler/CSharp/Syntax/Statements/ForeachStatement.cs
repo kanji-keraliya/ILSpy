@@ -32,9 +32,19 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 	/// </summary>
 	public class ForeachStatement : Statement
 	{
+		public static readonly TokenRole AwaitRole = UnaryOperatorExpression.AwaitRole;
 		public static readonly TokenRole ForeachKeywordRole = new TokenRole ("foreach");
 		public static readonly TokenRole InKeywordRole = new TokenRole ("in");
-		
+
+		public CSharpTokenNode AwaitToken {
+			get { return GetChildByRole(AwaitRole); }
+		}
+
+		public bool IsAsync {
+			get { return !GetChildByRole(AwaitRole).IsNull; }
+			set { SetChildByRole(AwaitRole, value ? new CSharpTokenNode(TextLocation.Empty, null) : null); }
+		}
+
 		public CSharpTokenNode ForeachToken {
 			get { return GetChildByRole (ForeachKeywordRole); }
 		}
@@ -47,23 +57,10 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			get { return GetChildByRole (Roles.Type); }
 			set { SetChildByRole (Roles.Type, value); }
 		}
-		
-		public string VariableName {
-			get {
-				return GetChildByRole (Roles.Identifier).Name;
-			}
-			set {
-				SetChildByRole(Roles.Identifier, Identifier.Create (value));
-			}
-		}
-		
-		public Identifier VariableNameToken {
-			get {
-				return GetChildByRole (Roles.Identifier);
-			}
-			set {
-				SetChildByRole(Roles.Identifier, value);
-			}
+
+		public VariableDesignation VariableDesignation {
+			get { return GetChildByRole(Roles.VariableDesignationRole); }
+			set { SetChildByRole(Roles.VariableDesignationRole, value); }
 		}
 		
 		public CSharpTokenNode InToken {
@@ -102,7 +99,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		protected internal override bool DoMatch(AstNode other, PatternMatching.Match match)
 		{
 			ForeachStatement o = other as ForeachStatement;
-			return o != null && this.VariableType.DoMatch(o.VariableType, match) && MatchString(this.VariableName, o.VariableName)
+			return o != null && this.VariableType.DoMatch(o.VariableType, match) && this.VariableDesignation.DoMatch(o.VariableDesignation, match)
 				&& this.InExpression.DoMatch(o.InExpression, match) && this.EmbeddedStatement.DoMatch(o.EmbeddedStatement, match);
 		}
 	}

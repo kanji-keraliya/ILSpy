@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 [assembly: AssemblyFileVersion("4.0.0.0")]
 [assembly: AssemblyInformationalVersion("4.0.0.0")]
@@ -11,6 +12,61 @@ using System.Reflection;
 [assembly: AssemblyCompany("Microsoft Corporation")]
 [assembly: AssemblyProduct("Microsoft® .NET Framework")]
 [assembly: CLSCompliant(false)]
+
+internal sealed class ExtraUnsafeTests
+{
+	public unsafe static void PinWithTypeMismatch(ref uint managedPtr)
+	{
+		fixed (ushort* ptr = &Unsafe.As<uint, ushort>(ref managedPtr)) {
+		}
+	}
+
+	public unsafe static uint* RefToPointerWithoutPinning(ref uint managedPtr)
+	{
+		return (uint*)Unsafe.AsPointer(ref managedPtr);
+	}
+
+	public static ref ulong RefAssignTypeMismatch(ref uint a, ref uint b)
+	{
+		ref ushort reference = ref Unsafe.As<uint, ushort>(ref a);
+		if (a != 0) {
+			reference = ref Unsafe.As<uint, ushort>(ref b);
+		}
+		Console.WriteLine(reference);
+		return ref Unsafe.As<ushort, ulong>(ref reference);
+	}
+
+	public unsafe static byte[] Issue1292(int val, byte[] arr)
+	{
+		//The blocks IL_0019 are reachable both inside and outside the pinned region starting at IL_0013. ILSpy has duplicated these blocks in order to place them both within and outside the `fixed` statement.
+		byte[] array;
+		if ((array = arr) != null && array.Length != 0) {
+			fixed (byte* ptr = &array[0]) {
+				*(int*)ptr = val;
+			}
+		} else {
+			/*pinned*/ref byte reference = ref *(byte*)null;
+			*(int*)Unsafe.AsPointer(ref reference) = val;
+		}
+		return arr;
+	}
+
+	public unsafe void pin_ptr_test(int[] a, int[] b)
+	{
+		//The blocks IL_0016 are reachable both inside and outside the pinned region starting at IL_0007. ILSpy has duplicated these blocks in order to place them both within and outside the `fixed` statement.
+		ref int reference;
+		fixed (int* ptr = &a[0]) {
+			if (*ptr <= 0) {
+				ptr[4 * 0] = 1;
+				return;
+			}
+			reference = ref *ptr;
+		}
+		fixed (int* ptr = &b[reference]) {
+			ptr[4 * 0] = 1;
+		}
+	}
+}
 
 namespace System.Runtime.CompilerServices
 {
@@ -67,7 +123,7 @@ namespace System.Runtime.CompilerServices
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public unsafe static void* AsPointer<T>(ref T value)
 		{
-			return &value;
+			return Unsafe.AsPointer(ref value);
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -151,9 +207,9 @@ namespace System.Runtime.CompilerServices
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
-		public unsafe static ref TTo As<TFrom, TTo>(ref TFrom source)
+		public static ref TTo As<TFrom, TTo>(ref TFrom source)
 		{
-			return ref *(TTo*)(&source);
+			return ref Unsafe.As<TFrom, TTo>(ref source);
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -171,7 +227,7 @@ namespace System.Runtime.CompilerServices
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public unsafe static void* Add<T>(void* source, int elementOffset)
 		{
-			return (byte*)source + (long)elementOffset * (long)sizeof(T);
+			return (byte*)source + (nint)elementOffset * (nint)sizeof(T);
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -195,7 +251,7 @@ namespace System.Runtime.CompilerServices
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public unsafe static void* Subtract<T>(void* source, int elementOffset)
 		{
-			return (byte*)source - (long)elementOffset * (long)sizeof(T);
+			return (byte*)source - (nint)elementOffset * (nint)sizeof(T);
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -213,7 +269,7 @@ namespace System.Runtime.CompilerServices
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public static IntPtr ByteOffset<T>(ref T origin, ref T target)
 		{
-			return Unsafe.ByteOffset(ref target, ref origin);
+			return Unsafe.ByteOffset(target: ref target, origin: ref origin);
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]

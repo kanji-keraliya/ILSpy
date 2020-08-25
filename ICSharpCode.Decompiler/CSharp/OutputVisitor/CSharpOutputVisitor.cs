@@ -696,6 +696,9 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				case BinaryOperatorType.NullCoalescing:
 					spacePolicy = true;
 					break;
+				case BinaryOperatorType.Range:
+					spacePolicy = false;
+					break;
 				default:
 					throw new NotSupportedException("Invalid value for BinaryOperatorType");
 			}
@@ -786,6 +789,17 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			directionExpression.Expression.AcceptVisitor(this);
 
 			EndNode(directionExpression);
+		}
+
+		public virtual void VisitDeclarationExpression(DeclarationExpression declarationExpression)
+		{
+			StartNode(declarationExpression);
+
+			declarationExpression.Type.AcceptVisitor(this);
+			Space();
+			declarationExpression.Designation.AcceptVisitor(this);
+
+			EndNode(declarationExpression);
 		}
 
 		public virtual void VisitOutVarDeclarationExpression(OutVarDeclarationExpression outVarDeclarationExpression)
@@ -1542,13 +1556,16 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		public virtual void VisitForeachStatement(ForeachStatement foreachStatement)
 		{
 			StartNode(foreachStatement);
+			if (foreachStatement.IsAsync)
+				WriteKeyword(ForeachStatement.AwaitRole);
 			WriteKeyword(ForeachStatement.ForeachKeywordRole);
 			Space(policy.SpaceBeforeForeachParentheses);
 			LPar();
 			Space(policy.SpacesWithinForeachParentheses);
 			foreachStatement.VariableType.AcceptVisitor(this);
 			Space();
-			WriteIdentifier(foreachStatement.VariableNameToken);
+			foreachStatement.VariableDesignation.AcceptVisitor(this);
+			Space();
 			WriteKeyword(ForeachStatement.InKeywordRole);
 			Space();
 			foreachStatement.InExpression.AcceptVisitor(this);
@@ -1756,6 +1773,33 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			EndNode(caseLabel);
 		}
 
+		public virtual void VisitSwitchExpression(SwitchExpression switchExpression)
+		{
+			StartNode(switchExpression);
+			switchExpression.Expression.AcceptVisitor(this);
+			Space();
+			WriteKeyword(SwitchExpression.SwitchKeywordRole);
+			OpenBrace(BraceStyle.EndOfLine);
+			foreach (AstNode node in switchExpression.SwitchSections) {
+				node.AcceptVisitor(this);
+				Comma(node);
+				NewLine();
+			}
+			CloseBrace(BraceStyle.EndOfLine);
+			EndNode(switchExpression);
+		}
+
+		public virtual void VisitSwitchExpressionSection(SwitchExpressionSection switchExpressionSection)
+		{
+			StartNode(switchExpressionSection);
+			switchExpressionSection.Pattern.AcceptVisitor(this);
+			Space();
+			WriteToken(Roles.Arrow);
+			Space();
+			switchExpressionSection.Body.AcceptVisitor(this);
+			EndNode(switchExpressionSection);
+		}
+
 		public virtual void VisitThrowStatement(ThrowStatement throwStatement)
 		{
 			StartNode(throwStatement);
@@ -1812,11 +1856,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				Space();
 				WriteKeyword(CatchClause.WhenKeywordRole);
 				Space(policy.SpaceBeforeIfParentheses);
-				LPar();
+				WriteToken(CatchClause.CondLPar);
 				Space(policy.SpacesWithinIfParentheses);
 				catchClause.Condition.AcceptVisitor(this);
 				Space(policy.SpacesWithinIfParentheses);
-				RPar();
+				WriteToken(CatchClause.CondRPar);
 			}
 			WriteBlock(catchClause.Body, policy.StatementBraceStyle);
 			EndNode(catchClause);
@@ -1845,16 +1889,36 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				WriteKeyword(UsingStatement.AwaitRole);
 			}
 			WriteKeyword(UsingStatement.UsingKeywordRole);
-			Space(policy.SpaceBeforeUsingParentheses);
-			LPar();
-			Space(policy.SpacesWithinUsingParentheses);
+			if (usingStatement.IsEnhanced) {
+				Space();
+			} else {
+				Space(policy.SpaceBeforeUsingParentheses);
+				LPar();
+				Space(policy.SpacesWithinUsingParentheses);
+			}
 
 			usingStatement.ResourceAcquisition.AcceptVisitor(this);
 
-			Space(policy.SpacesWithinUsingParentheses);
-			RPar();
+			if (usingStatement.IsEnhanced) {
+				Semicolon();
+			} else {
+				Space(policy.SpacesWithinUsingParentheses);
+				RPar();
+			}
 
-			WriteEmbeddedStatement(usingStatement.EmbeddedStatement);
+			if (usingStatement.IsEnhanced) {
+				if (usingStatement.EmbeddedStatement is BlockStatement blockStatement) {
+					StartNode(blockStatement);
+					foreach (var node in blockStatement.Statements) {
+						node.AcceptVisitor(this);
+					}
+					EndNode(blockStatement);
+				} else {
+					usingStatement.EmbeddedStatement.AcceptVisitor(this);
+				}
+			} else {
+				WriteEmbeddedStatement(usingStatement.EmbeddedStatement);
+			}
 
 			EndNode(usingStatement);
 		}
@@ -1873,19 +1937,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		public virtual void VisitLocalFunctionDeclarationStatement(LocalFunctionDeclarationStatement localFunctionDeclarationStatement)
 		{
 			StartNode(localFunctionDeclarationStatement);
-
-			WriteModifiers(localFunctionDeclarationStatement.ModifierTokens);
-			localFunctionDeclarationStatement.ReturnType.AcceptVisitor(this);
-			Space();
-			WriteIdentifier(localFunctionDeclarationStatement.NameToken);
-			WriteTypeParameters(localFunctionDeclarationStatement.TypeParameters);
-			Space(policy.SpaceBeforeMethodDeclarationParentheses);
-			WriteCommaSeparatedListInParenthesis(localFunctionDeclarationStatement.Parameters, policy.SpaceWithinMethodDeclarationParentheses);
-			foreach (Constraint constraint in localFunctionDeclarationStatement.Constraints) {
-				constraint.AcceptVisitor(this);
-			}
-			WriteMethodBody(localFunctionDeclarationStatement.Body, policy.MethodBraceStyle);
-
+			localFunctionDeclarationStatement.Declaration.AcceptVisitor(this);
 			EndNode(localFunctionDeclarationStatement);
 		}
 
@@ -1936,7 +1988,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				WriteKeyword("get", PropertyDeclaration.GetKeywordRole);
 				style = policy.PropertyGetBraceStyle;
 			} else if (accessor.Role == PropertyDeclaration.SetterRole) {
-				WriteKeyword("set", PropertyDeclaration.SetKeywordRole);
+				if (accessor.Keyword.Role == PropertyDeclaration.InitKeywordRole) {
+					WriteKeyword("init", PropertyDeclaration.InitKeywordRole);
+				} else {
+					WriteKeyword("set", PropertyDeclaration.SetKeywordRole);
+				}
 				style = policy.PropertySetBraceStyle;
 			} else if (accessor.Role == CustomEventDeclaration.AddAccessorRole) {
 				WriteKeyword("add", CustomEventDeclaration.AddKeywordRole);
@@ -2271,8 +2327,6 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		void MaybeNewLinesAfterUsings(AstNode node)
 		{
 			var nextSibling = node.NextSibling;
-			while (nextSibling is WhitespaceNode || nextSibling is NewLineNode)
-				nextSibling = nextSibling.NextSibling;
 
 			if ((node is UsingDeclaration || node is UsingAliasDeclaration) && !(nextSibling is UsingDeclaration || nextSibling is UsingAliasDeclaration)) {
 				for (int i = 0; i < policy.MinimumBlankLinesAfterUsings; i++)
@@ -2332,6 +2386,19 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			EndNode(tupleTypeElement);
 		}
 
+		public virtual void VisitFunctionPointerType(FunctionPointerType functionPointerType)
+		{
+			StartNode(functionPointerType);
+			WriteKeyword(Roles.DelegateKeyword);
+			WriteToken(FunctionPointerType.PointerRole);
+			if (!functionPointerType.CallingConventionIdentifier.IsNull) {
+				Space();
+				WriteIdentifier(functionPointerType.CallingConventionIdentifier);
+			}
+			WriteTypeArguments(functionPointerType.TypeArguments);
+			EndNode(functionPointerType);
+		}
+
 		public virtual void VisitComposedType(ComposedType composedType)
 		{
 			StartNode(composedType);
@@ -2377,28 +2444,27 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			EndNode(primitiveType);
 		}
 
+		public virtual void VisitSingleVariableDesignation(SingleVariableDesignation singleVariableDesignation)
+		{
+			StartNode(singleVariableDesignation);
+			writer.WriteIdentifier(singleVariableDesignation.IdentifierToken);
+			EndNode(singleVariableDesignation);
+		}
+
+		public virtual void VisitParenthesizedVariableDesignation(ParenthesizedVariableDesignation parenthesizedVariableDesignation)
+		{
+			StartNode(parenthesizedVariableDesignation);
+			LPar();
+			WriteCommaSeparatedList(parenthesizedVariableDesignation.VariableDesignations);
+			RPar();
+			EndNode(parenthesizedVariableDesignation);
+		}
+
 		public virtual void VisitComment(Comment comment)
 		{
 			writer.StartNode(comment);
 			writer.WriteComment(comment.CommentType, comment.Content);
 			writer.EndNode(comment);
-		}
-
-		public virtual void VisitNewLine(NewLineNode newLineNode)
-		{
-			//			formatter.StartNode(newLineNode);
-			//			formatter.NewLine();
-			//			formatter.EndNode(newLineNode);
-		}
-
-		public virtual void VisitWhitespace(WhitespaceNode whitespaceNode)
-		{
-			// unused
-		}
-
-		public virtual void VisitText(TextNode textNode)
-		{
-			// unused
 		}
 
 		public virtual void VisitPreProcessorDirective(PreProcessorDirective preProcessorDirective)
@@ -2572,7 +2638,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			} else if (childNode is Repeat) {
 				VisitRepeat((Repeat)childNode);
 			} else {
-				TextWriterTokenWriter.PrintPrimitiveValue(childNode);
+				writer.WritePrimitiveValue(childNode);
 			}
 		}
 		#endregion

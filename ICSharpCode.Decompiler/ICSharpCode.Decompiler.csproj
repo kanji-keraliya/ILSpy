@@ -14,7 +14,7 @@
     <GenerateAssemblyInformationalVersionAttribute>False</GenerateAssemblyInformationalVersionAttribute>
 
     <EnableDefaultItems>false</EnableDefaultItems>
-    <LangVersion>7.2</LangVersion>
+    <LangVersion>8.0</LangVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>ICSharpCode.Decompiler.snk</AssemblyOriginatorKeyFile>
@@ -61,14 +61,31 @@
     <Compile Include="CSharp\Annotations.cs" />
     <Compile Include="CSharp\CallBuilder.cs" />
     <Compile Include="CSharp\CSharpLanguageVersion.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\IProjectFileWriter.cs" />
     <Compile Include="CSharp\OutputVisitor\GenericGrammarAmbiguityVisitor.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\IProjectInfoProvider.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\ProjectFileWriterSdkStyle.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\ProjectFileWriterDefault.cs" />
     <Compile Include="CSharp\RequiredNamespaceCollector.cs" />
     <Compile Include="CSharp\SequencePointBuilder.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\TargetFramework.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\TargetServices.cs" />
+    <Compile Include="CSharp\Syntax\Expressions\DeclarationExpression.cs" />
+    <Compile Include="CSharp\Syntax\Expressions\SwitchExpression.cs" />
+    <Compile Include="CSharp\Syntax\FunctionPointerType.cs" />
+    <Compile Include="CSharp\Syntax\VariableDesignation.cs" />
+    <Compile Include="IL\Transforms\DeconstructionTransform.cs" />
+    <Compile Include="IL\Transforms\FixLoneIsInst.cs" />
+    <Compile Include="IL\Instructions\DeconstructInstruction.cs" />
+    <Compile Include="IL\Instructions\DeconstructResultInstruction.cs" />
+    <Compile Include="IL\Instructions\MatchInstruction.cs" />
+    <Compile Include="IL\Transforms\IndexRangeTransform.cs" />
     <Compile Include="CSharp\TranslatedStatement.cs" />
     <Compile Include="DebugInfo\KnownGuids.cs" />
     <Compile Include="Disassembler\DisassemblerSignatureTypeProvider.cs" />
     <Compile Include="Documentation\XmlDocumentationElement.cs" />
     <Compile Include="IL\ControlFlow\AwaitInFinallyTransform.cs" />
+    <Compile Include="IL\Transforms\IntroduceNativeIntTypeOnLocals.cs" />
     <Compile Include="Solution\ProjectId.cs" />
     <Compile Include="Solution\ProjectItem.cs" />
     <Compile Include="Solution\SolutionCreator.cs" />
@@ -81,7 +98,6 @@
     <Compile Include="CSharp\Syntax\CSharpUtil.cs" />
     <Compile Include="CSharp\Syntax\DepthFirstAstVisitor.cs" />
     <Compile Include="CSharp\Syntax\DocumentationReference.cs" />
-    <Compile Include="CSharp\Syntax\ErrorNode.cs" />
     <Compile Include="CSharp\Syntax\Expressions\AnonymousMethodExpression.cs" />
     <Compile Include="CSharp\Syntax\Expressions\AnonymousTypeCreateExpression.cs" />
     <Compile Include="CSharp\Syntax\Expressions\ArrayCreateExpression.cs" />
@@ -130,14 +146,11 @@
     <Compile Include="CSharp\Syntax\GeneralScope\DelegateDeclaration.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\ExternAliasDeclaration.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\NamespaceDeclaration.cs" />
-    <Compile Include="CSharp\Syntax\GeneralScope\NewLineNode.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\PreProcessorDirective.cs" />
-    <Compile Include="CSharp\Syntax\GeneralScope\TextNode.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\TypeDeclaration.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\TypeParameterDeclaration.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\UsingAliasDeclaration.cs" />
     <Compile Include="CSharp\Syntax\GeneralScope\UsingDeclaration.cs" />
-    <Compile Include="CSharp\Syntax\GeneralScope\WhitespaceNode.cs" />
     <Compile Include="CSharp\Syntax\IAstVisitor.cs" />
     <Compile Include="CSharp\Syntax\Identifier.cs" />
     <Compile Include="CSharp\Syntax\IdentifierExpressionBackreference.cs" />
@@ -271,12 +284,12 @@
     <Compile Include="CSharp\ExpressionBuilder.cs" />
     <Compile Include="CSharp\StatementBuilder.cs" />
     <Compile Include="CSharp\Transforms\AddCheckedBlocks.cs" />
-    <Compile Include="CSharp\Transforms\ConvertConstructorCallIntoInitializer.cs" />
+    <Compile Include="CSharp\Transforms\TransformFieldAndConstructorInitializers.cs" />
     <Compile Include="CSharp\Transforms\CustomPatterns.cs" />
     <Compile Include="CSharp\Transforms\IAstTransform.cs" />
     <Compile Include="CSharp\Transforms\IntroduceUnsafeModifier.cs" />
     <Compile Include="CSharp\Transforms\ReplaceMethodCallsWithOperators.cs" />
-    <Compile Include="CSharp\WholeProjectDecompiler.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\WholeProjectDecompiler.cs" />
     <Compile Include="CSharp\Transforms\AddXmlDocumentationTransform.cs" />
     <Compile Include="DecompileRun.cs" />
     <Compile Include="Disassembler\ILParser.cs" />
@@ -384,6 +397,7 @@
     <Compile Include="TypeSystem\Implementation\MetadataTypeDefinition.cs" />
     <Compile Include="TypeSystem\Implementation\MetadataTypeParameter.cs" />
     <Compile Include="TypeSystem\Implementation\SpecializedParameter.cs" />
+    <Compile Include="TypeSystem\Implementation\SyntheticRangeIndexer.cs" />
     <Compile Include="TypeSystem\Implementation\ThreeState.cs" />
     <Compile Include="TypeSystem\MetadataModule.cs" />
     <Compile Include="TypeSystem\ModifiedType.cs" />
@@ -626,13 +640,25 @@
   </ItemGroup>
 
   <Target Name="ILSpyUpdateAssemblyInfo" BeforeTargets="BeforeBuild">
+    <ItemGroup>
+      <UpdateAssemblyInfoStamp Include="obj\update-assemblyinfo-last-commit-hash.txt" />
+    </ItemGroup>
     <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
       <UpdateAssemblyInfo>powershell -NoProfile -ExecutionPolicy Bypass -File BuildTools/update-assemblyinfo.ps1 $(Configuration)</UpdateAssemblyInfo>
+      <GitRevParse>git rev-parse HEAD^^{commit}</GitRevParse>
     </PropertyGroup>
     <PropertyGroup Condition=" '$(OS)' != 'Windows_NT' ">
       <UpdateAssemblyInfo>pwsh -NoProfile -ExecutionPolicy Bypass -File BuildTools/update-assemblyinfo.ps1 $(Configuration)</UpdateAssemblyInfo>
+      <GitRevParse>git rev-parse HEAD^{commit}</GitRevParse>
     </PropertyGroup>
-    <Exec WorkingDirectory=".." Command="$(UpdateAssemblyInfo)" Timeout="60000" />
+    <ReadLinesFromFile ContinueOnError="true" File="@(UpdateAssemblyInfoStamp)">
+      <Output TaskParameter="Lines" PropertyName="LastCommitHash" />
+    </ReadLinesFromFile>
+    <Exec ContinueOnError="true" WorkingDirectory=".." Command="$(GitRevParse)" ConsoleToMSBuild="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="CommitHash" />
+    </Exec>
+    <Exec WorkingDirectory=".." Command="$(UpdateAssemblyInfo)" Timeout="60000" Condition="'$(CommitHash)'!='$(LastCommitHash)'" />
+    <WriteLinesToFile Lines="$(CommitHash)" File="@(UpdateAssemblyInfoStamp)" Overwrite="true" Condition="'$(CommitHash)'!='$(LastCommitHash)'" />
   </Target>
   
 </Project>

@@ -82,7 +82,9 @@ namespace ICSharpCode.ILSpy.TextView
 
 		public string IndentationString { get; set; } = "\t";
 
-		public string Title { get; set; }
+		internal bool IgnoreNewLineAndIndent { get; set; }
+
+		public string Title { get; set; } = Properties.Resources.NewTab;
 
 		/// <summary>
 		/// Gets/sets the <see cref="Uri"/> that is displayed by this view.
@@ -177,16 +179,22 @@ namespace ICSharpCode.ILSpy.TextView
 		
 		public void Indent()
 		{
+			if (IgnoreNewLineAndIndent)
+				return;
 			indent++;
 		}
 		
 		public void Unindent()
 		{
+			if (IgnoreNewLineAndIndent)
+				return;
 			indent--;
 		}
 		
 		void WriteIndent()
 		{
+			if (IgnoreNewLineAndIndent)
+				return;
 			Debug.Assert(textDocument == null);
 			if (needsIndent) {
 				needsIndent = false;
@@ -211,10 +219,14 @@ namespace ICSharpCode.ILSpy.TextView
 		public void WriteLine()
 		{
 			Debug.Assert(textDocument == null);
-			b.AppendLine();
-			needsIndent = true;
-			lastLineStart = b.Length;
-			lineNumber++;
+			if (IgnoreNewLineAndIndent) {
+				b.Append(' ');
+			} else {
+				b.AppendLine();
+				needsIndent = true;
+				lastLineStart = b.Length;
+				lineNumber++;
+			}
 			if (this.TextLength > LengthLimit) {
 				throw new OutputLengthExceededException();
 			}
@@ -245,7 +257,7 @@ namespace ICSharpCode.ILSpy.TextView
 			if (isDefinition) {
 				this.DefinitionLookup.AddDefinition((module, handle), this.TextLength);
 			}
-			references.Add(new ReferenceSegment { StartOffset = start, EndOffset = end, Reference = (protocol, module, handle), IsDefinition = isDefinition });
+			references.Add(new ReferenceSegment { StartOffset = start, EndOffset = end, Reference = new EntityReference(protocol, module, handle), IsDefinition = isDefinition });
 		}
 
 		public void WriteReference(IType type, string text, bool isDefinition = false)

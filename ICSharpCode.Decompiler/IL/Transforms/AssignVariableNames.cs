@@ -20,6 +20,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Metadata;
+
 using Humanizer;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -51,6 +53,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		ILTransformContext context;
 		string[] currentFieldNames;
 		Dictionary<string, int> reservedVariableNames;
+		Dictionary<MethodDefinitionHandle, string> localFunctionMapping;
 		HashSet<ILVariable> loopCounters;
 		const char maxLoopVariableName = 'n';
 
@@ -59,6 +62,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			this.context = context;
 			currentFieldNames = function.Method.DeclaringTypeDefinition.Fields.Select(f => f.Name).ToArray();
 			reservedVariableNames = new Dictionary<string, int>();
+			localFunctionMapping = new Dictionary<MethodDefinitionHandle, string>();
 			loopCounters = CollectLoopCounters(function);
 			foreach (var f in function.Descendants.OfType<ILFunction>()) {
 				if (f.Method != null) {
@@ -180,6 +184,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				if (!LocalFunctionDecompiler.ParseLocalFunctionName(localFunction.Name, out _, out var newName) || !IsValidName(newName))
 					newName = null;
 				localFunction.Name = newName;
+				localFunction.ReducedMethod.Name = newName;
 			}
 			// Now generate names:
 			var mapping = new Dictionary<ILVariable, string>(ILVariableEqualityComparer.Instance);
@@ -199,6 +204,25 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					newName = GetAlternativeName("f");
 				}
 				localFunction.Name = newName;
+				localFunction.ReducedMethod.Name = newName;
+				localFunctionMapping[(MethodDefinitionHandle)localFunction.ReducedMethod.MetadataToken] = newName;
+			}
+			foreach (var inst in function.Descendants) {
+				LocalFunctionMethod localFunction;
+				switch (inst) {
+					case Call call:
+						localFunction = call.Method as LocalFunctionMethod;
+						break;
+					case LdFtn ldftn:
+						localFunction = ldftn.Method as LocalFunctionMethod;
+						break;
+					default:
+						localFunction = null;
+						break;
+				}
+				if (localFunction == null || !localFunctionMapping.TryGetValue((MethodDefinitionHandle)localFunction.MetadataToken, out var name))
+					continue;
+				localFunction.Name = name;
 			}
 		}
 
@@ -417,19 +441,28 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				type = NullableType.GetUnderlyingType(((TypeWithElementType)type).ElementType);
 			}
 
-			string name;
-			if (type is ArrayType) {
-				name = "array";
-			} else if (type is PointerType) {
-				name = "ptr";
-			} else if (type.Kind == TypeKind.TypeParameter || type.Kind == TypeKind.Unknown || type.Kind == TypeKind.Dynamic) {
-				name = "val";
-			} else if (type.Kind == TypeKind.ByReference) {
-				name = "reference";
-			} else if (type.IsAnonymousType()) {
+			string name = type.Kind switch
+			{
+				TypeKind.Array => "array",
+				TypeKind.Pointer => "ptr",
+				TypeKind.TypeParameter => "val",
+				TypeKind.Unknown => "val",
+				TypeKind.Dynamic => "val",
+				TypeKind.ByReference => "reference",
+				TypeKind.Tuple => "tuple",
+				TypeKind.NInt => "num",
+				TypeKind.NUInt => "num",
+				_ => null
+			};
+			if (name != null) {
+				return name;
+			}
+			if (type.IsAnonymousType()) {
 				name = "anon";
 			} else if (type.Name.EndsWith("Exception", StringComparison.Ordinal)) {
 				name = "ex";
+			} else if (type.IsCSharpNativeIntegerType()) {
+				name = "num";
 			} else if (!typeNameToVariableNameDict.TryGetValue(type.FullName, out name)) {
 				name = type.Name;
 				// remove the 'I' for interfaces

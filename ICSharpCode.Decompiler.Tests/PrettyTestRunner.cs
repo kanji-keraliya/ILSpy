@@ -89,7 +89,13 @@ namespace ICSharpCode.Decompiler.Tests
 			RunForLibrary();
 			RunForLibrary(asmOptions: AssemblerOptions.UseDebug);
 		}
-		
+
+		[Test]
+		public void IndexRangeTest([ValueSource(nameof(dotnetCoreOnlyOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(cscOptions: cscOptions);
+		}
+
 		[Test]
 		public void InlineAssignmentTest([ValueSource(nameof(defaultOptions))] CompilerOptions cscOptions)
 		{
@@ -129,8 +135,15 @@ namespace ICSharpCode.Decompiler.Tests
 		{
 			RunForLibrary(cscOptions: cscOptions, decompilerSettings: new DecompilerSettings {
 				// legacy csc generates a dead store in debug builds
-				RemoveDeadStores = (cscOptions == CompilerOptions.None)
+				RemoveDeadStores = (cscOptions == CompilerOptions.None),
+				SwitchExpressions = false,
 			});
+		}
+
+		[Test]
+		public void SwitchExpressions([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(cscOptions: cscOptions);
 		}
 
 		[Test]
@@ -142,7 +155,7 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void DelegateConstruction([ValueSource(nameof(defaultOptionsWithMcs))] CompilerOptions cscOptions)
 		{
-			RunForLibrary(cscOptions: cscOptions);
+			RunForLibrary(cscOptions: cscOptions | CompilerOptions.Preview);
 		}
 
 		[Test]
@@ -165,6 +178,15 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public void Using([ValueSource(nameof(defaultOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(
+				cscOptions: cscOptions,
+				decompilerSettings: new DecompilerSettings { UseEnhancedUsing = false }
+			);
+		}
+
+		[Test]
+		public void UsingVariables([ValueSource(nameof(dotnetCoreOnlyOptions))] CompilerOptions cscOptions)
 		{
 			RunForLibrary(cscOptions: cscOptions);
 		}
@@ -193,7 +215,7 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void LocalFunctions([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
 		{
-			RunForLibrary(cscOptions: cscOptions);
+			RunForLibrary(cscOptions: cscOptions | CompilerOptions.Preview);
 		}
 
 		[Test]
@@ -276,7 +298,7 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
-		public void ValueTypes([ValueSource(nameof(defaultOptions))] CompilerOptions cscOptions)
+		public void ValueTypes([ValueSource(nameof(defaultOptionsWithMcs))] CompilerOptions cscOptions)
 		{
 			RunForLibrary(cscOptions: cscOptions);
 		}
@@ -302,6 +324,12 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public void AsyncForeach([ValueSource(nameof(dotnetCoreOnlyOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(cscOptions: cscOptions);
+		}
+
+		[Test]
 		public void AsyncMain([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
 		{
 			Run(cscOptions: cscOptions);
@@ -316,7 +344,10 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void AsyncUsing([ValueSource(nameof(dotnetCoreOnlyOptions))] CompilerOptions cscOptions)
 		{
-			RunForLibrary(cscOptions: cscOptions);
+			RunForLibrary(
+				cscOptions: cscOptions,
+				decompilerSettings: new DecompilerSettings { UseEnhancedUsing = false }
+			);
 		}
 
 		[Test]
@@ -329,6 +360,12 @@ namespace ICSharpCode.Decompiler.Tests
 		public void NullableRefTypes([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
 		{
 			RunForLibrary(cscOptions: cscOptions);
+		}
+
+		[Test]
+		public void NativeInts([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(cscOptions: cscOptions | CompilerOptions.Preview);
 		}
 
 		[Test]
@@ -388,7 +425,7 @@ namespace ICSharpCode.Decompiler.Tests
 		[Test]
 		public void OptionalArguments([ValueSource(nameof(defaultOptions))] CompilerOptions cscOptions)
 		{
-			RunForLibrary(cscOptions: cscOptions);
+			RunForLibrary(cscOptions: cscOptions | CompilerOptions.Preview);
 		}
 
 		[Test]
@@ -477,6 +514,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public void Discards([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
+		{
+			RunForLibrary(cscOptions: cscOptions);
+		}
+
+		[Test]
+		public void DeconstructionTests([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions cscOptions)
 		{
 			RunForLibrary(cscOptions: cscOptions);
 		}

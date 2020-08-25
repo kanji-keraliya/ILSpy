@@ -23,23 +23,36 @@ namespace LocalFunctions
 {
 	internal class LocalFunctions
 	{
+		[AttributeUsage(AttributeTargets.All)]
+		internal class MyAttribute : Attribute
+		{
+
+		}
+
 		public class Generic<T1> where T1 : struct, ICloneable, IConvertible
 		{
 			public int MixedLocalFunction<T2>() where T2 : ICloneable, IConvertible
 			{
+#pragma warning disable CS0219
 				T2 t2 = default(T2);
 				object z = this;
 				for (int j = 0; j < 10; j++) {
 					int i = 0;
-					i += NonStaticMethod6<object>();
-					int NonStaticMethod6<T3>()
+					i += NonStaticMethod6<object>(0);
+#if CS90
+					[My]
+					[return: My]
+					int NonStaticMethod6<[My] T3>([My] int unused)
+#else
+					int NonStaticMethod6<T3>(int unused)
+#endif
 					{
 						t2 = default(T2);
 						int l = 0;
 						return NonStaticMethod6_1<T1>() + NonStaticMethod6_1<T2>() + z.GetHashCode();
 						int NonStaticMethod6_1<T4>()
 						{
-							return i + l + NonStaticMethod6<T4>() + StaticMethod1<decimal>();
+							return i + l + NonStaticMethod6<T4>(0) + StaticMethod1<decimal>();
 						}
 					}
 				}
@@ -95,6 +108,7 @@ namespace LocalFunctions
 						return k;
 					}
 				}
+#pragma warning restore CS0219
 			}
 
 			public int MixedLocalFunction2Delegate<T2>() where T2 : ICloneable, IConvertible
@@ -187,6 +201,7 @@ namespace LocalFunctions
 
 			public static void Test_CaptureT<T2>()
 			{
+#pragma warning disable CS0219
 				T2 t2 = default(T2);
 				Method1<int>();
 				void Method1<T3>()
@@ -202,6 +217,7 @@ namespace LocalFunctions
 						t3 = default(T3);
 					}
 				}
+#pragma warning restore CS0219
 			}
 
 			public void TestGenericArgs<T2>() where T2 : List<T2>
@@ -716,6 +732,92 @@ namespace LocalFunctions
 						t = 0;
 						return 0;
 					}
+				}
+			}
+		}
+
+		public int Issue1798_NestedCapture2()
+		{
+			return Method();
+#if CS80
+			static int Method()
+#else
+			int Method()
+#endif
+			{
+				int t0 = 0;
+				return ZZZ_0();
+				int ZZZ_0()
+				{
+					t0 = 0;
+					int t2 = t0;
+					return ((Func<int>)delegate {
+						t0 = 0;
+						t2 = 0;
+						return ZZZ_1();
+					})();
+				}
+				int ZZZ_1()
+				{
+					t0 = 0;
+					int t1 = t0;
+#if !OPT
+					Func<int> func = delegate {
+#else
+					return ((Func<int>)delegate {
+#endif
+						t0 = 0;
+						t1 = 0;
+						return 0;
+#if !OPT
+					};
+					return func();
+#else
+					})();
+#endif
+				}
+			}
+		}
+
+		public int Issue1798_NestedCapture2b()
+		{
+			return Method();
+#if CS80
+			static int Method()
+#else
+			int Method()
+#endif
+			{
+				int t0 = 0;
+				return ZZZ_0() + ZZZ_1();
+				int ZZZ_0()
+				{
+					t0 = 0;
+					int t2 = t0;
+					return ((Func<int>)delegate {
+						t0 = 0;
+						t2 = 0;
+						return ZZZ_1();
+					})();
+				}
+				int ZZZ_1()
+				{
+					t0 = 0;
+					int t1 = t0;
+#if !OPT
+					Func<int> func = delegate {
+#else
+					return ((Func<int>)delegate {
+#endif
+						t0 = 0;
+						t1 = 0;
+						return 0;
+#if !OPT
+					};
+					return func();
+#else
+					})();
+#endif
 				}
 			}
 		}

@@ -98,6 +98,86 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
+
+		public ILInstruction GetCommonParent(ILInstruction other)
+		{
+			if (other == null)
+				throw new ArgumentNullException(nameof(other));
+
+			ILInstruction a = this;
+			ILInstruction b = other;
+
+			int levelA = a.CountAncestors();
+			int levelB = b.CountAncestors();
+
+			while (levelA > levelB) {
+				a = a.Parent;
+				levelA--;
+			}
+
+			while (levelB > levelA) {
+				b = b.Parent;
+				levelB--;
+			}
+
+			while (a != b) {
+				a = a.Parent;
+				b = b.Parent;
+			}
+
+			return a;
+		}
+
+		/// <summary>
+		/// Returns whether this appears before other in a post-order walk of the whole tree.
+		/// </summary>
+		public bool IsBefore(ILInstruction other)
+		{
+			if (other == null)
+				throw new ArgumentNullException(nameof(other));
+
+			ILInstruction a = this;
+			ILInstruction b = other;
+
+			int levelA = a.CountAncestors();
+			int levelB = b.CountAncestors();
+
+			int originalLevelA = levelA;
+			int originalLevelB = levelB;
+
+			while (levelA > levelB) {
+				a = a.Parent;
+				levelA--;
+			}
+
+			while (levelB > levelA) {
+				b = b.Parent;
+				levelB--;
+			}
+
+			if (a == b) {
+				// a or b is a descendant of the other,
+				// whichever node has the higher level comes first in post-order walk.
+				return originalLevelA > originalLevelB;
+			}
+
+			while (a.Parent != b.Parent) {
+				a = a.Parent;
+				b = b.Parent;
+			}
+
+			// now a and b have the same parent or are both root nodes
+			return a.ChildIndex < b.ChildIndex;
+		}
+
+		private int CountAncestors()
+		{
+			int level = 0;
+			for (ILInstruction ancestor = this; ancestor != null; ancestor = ancestor.Parent) {
+				level++;
+			}
+			return level;
+		}
 		
 		/// <summary>
 		/// Gets the stack type of the value produced by this instruction.
@@ -214,24 +294,29 @@ namespace ICSharpCode.Decompiler.IL
 
 		public void AddILRange(Interval newRange)
 		{
-			if (this.ILRange.IsEmpty) {
-				this.ILRange = newRange;
-				return;
+			this.ILRange = CombineILRange(this.ILRange, newRange);
+		}
+
+		protected static Interval CombineILRange(Interval oldRange, Interval newRange)
+		{
+			if (oldRange.IsEmpty) {
+				return newRange;
 			}
 			if (newRange.IsEmpty) {
-				return;
+				return oldRange;
 			}
-			if (newRange.Start <= this.StartILOffset) {
-				if (newRange.End < this.StartILOffset) {
-					this.ILRange = newRange; // use the earlier range
+			if (newRange.Start <= oldRange.Start) {
+				if (newRange.End < oldRange.Start) {
+					return newRange; // use the earlier range
 				} else {
 					// join overlapping ranges
-					this.ILRange = new Interval(newRange.Start, Math.Max(newRange.End, this.ILRange.End));
+					return new Interval(newRange.Start, Math.Max(newRange.End, oldRange.End));
 				}
-			} else if (newRange.Start <= this.ILRange.End) {
+			} else if (newRange.Start <= oldRange.End) {
 				// join overlapping ranges
-				this.ILRange = new Interval(this.StartILOffset, Math.Max(newRange.End, this.ILRange.End));
+				return new Interval(oldRange.Start, Math.Max(newRange.End, oldRange.End));
 			}
+			return oldRange;
 		}
 
 		public void AddILRange(ILInstruction sourceInstruction)
@@ -627,9 +712,10 @@ namespace ICSharpCode.Decompiler.IL
 		/// <param name="childPointer">Reference to the field holding the child</param>
 		/// <param name="newValue">New child</param>
 		/// <param name="index">Index of the field in the Children collection</param>
-		protected internal void SetChildInstruction(ref ILInstruction childPointer, ILInstruction newValue, int index)
+		protected internal void SetChildInstruction<T>(ref T childPointer, T newValue, int index)
+			where T : ILInstruction
 		{
-			ILInstruction oldValue = childPointer;
+			T oldValue = childPointer;
 			Debug.Assert(oldValue == GetChild(index));
 			if (oldValue == newValue && newValue?.parent == this && newValue.ChildIndex == index)
 				return;
@@ -796,6 +882,15 @@ namespace ICSharpCode.Decompiler.IL
 				ctx.RegisterMoveIfNecessary(predecessor);
 			}
 			return true;
+		}
+
+		/// <summary>
+		/// Gets whether the specified instruction may be inlined into the specified slot.
+		/// Note: this does not check whether reordering with the previous slots is valid; only wheter the target slot supports inlining at all!
+		/// </summary>
+		internal virtual bool CanInlineIntoSlot(int childIndex, ILInstruction expressionBeingMoved)
+		{
+			return GetChildSlot(childIndex).CanInlineInto;
 		}
 	}
 	
